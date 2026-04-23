@@ -407,6 +407,39 @@ impl Component for AppModel {
         status_label.set_wrap(true);
         root.append(&status_label);
 
+        let key_controller = gtk::EventControllerKey::new();
+        key_controller.connect_key_pressed(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            window,
+            move |_, key, _, state| {
+                if !should_handle_timeline_shortcuts(&window) {
+                    return false.into();
+                }
+
+                let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+                let handled = match (ctrl, key) {
+                    (true, gdk::Key::c) | (true, gdk::Key::C) => {
+                        sender.input(AppMsg::CopySelection);
+                        true
+                    }
+                    (true, gdk::Key::v) | (true, gdk::Key::V) => {
+                        sender.input(AppMsg::PasteClipboard);
+                        true
+                    }
+                    (_, gdk::Key::Delete) | (_, gdk::Key::KP_Delete) => {
+                        sender.input(AppMsg::RemoveSelection);
+                        true
+                    }
+                    _ => false,
+                };
+
+                handled.into()
+            }
+        ));
+        window.add_controller(key_controller);
+
         import_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -1434,6 +1467,17 @@ fn set_check_if_needed(check: &gtk::CheckButton, value: bool) {
     if check.is_active() != value {
         check.set_active(value);
     }
+}
+
+fn should_handle_timeline_shortcuts(window: &gtk::Window) -> bool {
+    let Some(focus) = gtk::prelude::RootExt::focus(window) else {
+        return true;
+    };
+
+    !(focus.is::<gtk::Entry>()
+        || focus.is::<gtk::SpinButton>()
+        || focus.is::<gtk::TextView>()
+        || focus.is::<gtk::EditableLabel>())
 }
 
 fn open_image_dialog(window: &gtk::Window, sender: ComponentSender<AppModel>) {
