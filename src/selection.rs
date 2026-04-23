@@ -116,7 +116,13 @@ mod tests {
 
     #[test]
     fn shift_click_adds_inclusive_range() {
-        let state = apply_selection(&[1, 2, 3, 4, 5], &set(&[1]), Some(1), 4, SelectionMode::Shift);
+        let state = apply_selection(
+            &[1, 2, 3, 4, 5],
+            &set(&[1]),
+            Some(1),
+            4,
+            SelectionMode::Shift,
+        );
         assert_eq!(state.selection, set(&[1, 2, 3, 4]));
         assert_eq!(state.anchor_id, Some(1));
     }

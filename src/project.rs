@@ -12,7 +12,8 @@ pub fn save_project(path: &Path, document: &ProjectDocument) -> anyhow::Result<(
 }
 
 pub fn load_project(path: &Path) -> anyhow::Result<ProjectDocument> {
-    let json = fs::read_to_string(path).with_context(|| format!("read project {}", path.display()))?;
+    let json =
+        fs::read_to_string(path).with_context(|| format!("read project {}", path.display()))?;
     let document = serde_json::from_str(&json).context("parse project json")?;
     Ok(document)
 }

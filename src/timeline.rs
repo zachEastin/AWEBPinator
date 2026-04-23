@@ -154,7 +154,8 @@ impl Timeline {
         } else {
             clamped_target
         };
-        self.frames.insert(adjusted_target.min(self.frames.len()), frame);
+        self.frames
+            .insert(adjusted_target.min(self.frames.len()), frame);
         true
     }
 
@@ -169,7 +170,11 @@ impl Timeline {
         inserted
     }
 
-    pub fn append_reverse_loop(&mut self, selection: &BTreeSet<u64>, repeat_edges: bool) -> Vec<u64> {
+    pub fn append_reverse_loop(
+        &mut self,
+        selection: &BTreeSet<u64>,
+        repeat_edges: bool,
+    ) -> Vec<u64> {
         let mut source = self.selection_or_all(selection);
         if !repeat_edges && source.len() > 1 {
             source.pop();
@@ -195,7 +200,10 @@ impl Timeline {
         frames
     }
 
-    fn build_imported_frames(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<FrameItem> {
+    fn build_imported_frames(
+        &mut self,
+        paths: impl IntoIterator<Item = PathBuf>,
+    ) -> Vec<FrameItem> {
         let mut imported = Vec::new();
         for path in paths {
             let id = self.next_id;
@@ -295,7 +303,11 @@ mod tests {
             PathBuf::from("c.png"),
         ]);
         assert!(timeline.move_frame_to_index(imported[0], 3));
-        let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
+        let names: Vec<_> = timeline
+            .frames()
+            .iter()
+            .map(|frame| frame.file_name())
+            .collect();
         assert_eq!(names, vec!["b.png", "c.png", "a.png"]);
     }
 
@@ -307,7 +319,11 @@ mod tests {
         let imported = timeline.prepend_paths([PathBuf::from("a.png"), PathBuf::from("b.png")]);
 
         assert_eq!(imported.len(), 2);
-        let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
+        let names: Vec<_> = timeline
+            .frames()
+            .iter()
+            .map(|frame| frame.file_name())
+            .collect();
         assert_eq!(names, vec!["a.png", "b.png", "c.png", "d.png"]);
     }
 
@@ -316,10 +332,15 @@ mod tests {
         let mut timeline = Timeline::new();
         timeline.import_paths([PathBuf::from("old.png")]);
 
-        let imported = timeline.replace_paths([PathBuf::from("new-a.png"), PathBuf::from("new-b.png")]);
+        let imported =
+            timeline.replace_paths([PathBuf::from("new-a.png"), PathBuf::from("new-b.png")]);
 
         assert_eq!(imported, vec![1, 2]);
-        let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
+        let names: Vec<_> = timeline
+            .frames()
+            .iter()
+            .map(|frame| frame.file_name())
+            .collect();
         assert_eq!(names, vec!["new-a.png", "new-b.png"]);
     }
 }

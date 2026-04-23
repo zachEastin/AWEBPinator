@@ -14,15 +14,21 @@ impl Diagnostics {
         let mut lines = Vec::new();
         lines.push(format!(
             "ffmpeg: {}",
-            self.ffmpeg_version
-                .as_deref()
-                .unwrap_or(if self.ffmpeg_ok { "available" } else { "missing" })
+            self.ffmpeg_version.as_deref().unwrap_or(if self.ffmpeg_ok {
+                "available"
+            } else {
+                "missing"
+            })
         ));
         lines.push(format!(
             "ffprobe: {}",
             self.ffprobe_version
                 .as_deref()
-                .unwrap_or(if self.ffprobe_ok { "available" } else { "missing" })
+                .unwrap_or(if self.ffprobe_ok {
+                    "available"
+                } else {
+                    "missing"
+                })
         ));
         if !self.issues.is_empty() {
             lines.push(format!("Issues: {}", self.issues.join(" | ")));
@@ -56,6 +62,9 @@ fn command_version(binary: &str) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    let line = String::from_utf8_lossy(&output.stdout).lines().next()?.to_string();
+    let line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()?
+        .to_string();
     Some(line)
 }

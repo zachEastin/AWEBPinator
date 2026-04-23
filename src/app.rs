@@ -1,20 +1,23 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use gtk::glib::clone;
-use gtk::prelude::*;
-use gtk::{gdk, gio};
-use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
 use crate::export::{build_command_preview, export_animation};
 use crate::project::{load_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
 use crate::selection::{SelectionMode, apply_selection};
-use crate::thumbnail::{ensure_cache_dir, populate_frame_metadata, refresh_thumbnail, render_preview};
+use crate::thumbnail::{
+    ensure_cache_dir, populate_frame_metadata, refresh_thumbnail, render_preview,
+};
 use crate::timeline::Timeline;
 use crate::types::{
     CropRect, EncoderPreset, ExportJob, ExportPreset, ExportProfile, FitMode, FrameItem,
     ProjectDocument, ResizeTarget,
 };
+use gtk::glib::clone;
+use gtk::prelude::*;
+use gtk::{gdk, gio};
+use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
 
 pub fn run() {
     let app = RelmApp::new("dev.truevfx.awebpinator");
@@ -24,14 +27,31 @@ pub fn run() {
 #[derive(Debug)]
 pub enum AppMsg {
     ImportPaths(Vec<PathBuf>),
-    ImportPathsWithMode { paths: Vec<PathBuf>, mode: ImportMode },
-    SelectFrame { id: u64, mode: SelectionMode },
+    ImportPathsWithMode {
+        paths: Vec<PathBuf>,
+        mode: ImportMode,
+    },
+    GoToBeginning,
+    StepBackward,
+    TogglePlayback,
+    StepForward,
+    GoToEnd,
+    PlaybackAdvance {
+        generation: u64,
+    },
+    SelectFrame {
+        id: u64,
+        mode: SelectionMode,
+    },
     ToggleEnabled(u64, bool),
     SetFrameDuration(u64, u32),
     ApplyBatchDuration(u32),
     MoveSelectionUp,
     MoveSelectionDown,
-    DropFrameAt { dragged_id: u64, target_index: usize },
+    DropFrameAt {
+        dragged_id: u64,
+        target_index: usize,
+    },
     DuplicateSelection,
     CopySelection,
     PasteClipboard,
@@ -106,12 +126,19 @@ pub struct AppModel {
     command_preview: String,
     preview_path: Option<PathBuf>,
     preview_frame_id: Option<u64>,
+    playback_active: bool,
+    playback_generation: u64,
     thumbnails_pending: usize,
     export_in_progress: bool,
 }
 
 pub struct AppWidgets {
     timeline_strip: gtk::Box,
+    nav_first_button: gtk::Button,
+    nav_prev_button: gtk::Button,
+    nav_play_button: gtk::Button,
+    nav_next_button: gtk::Button,
+    nav_last_button: gtk::Button,
     diagnostics_label: gtk::Label,
     selection_label: gtk::Label,
     status_label: gtk::Label,
@@ -180,6 +207,8 @@ impl Component for AppModel {
             command_preview: String::new(),
             preview_path: None,
             preview_frame_id: None,
+            playback_active: false,
+            playback_generation: 0,
             thumbnails_pending: 0,
             export_in_progress: false,
         };
@@ -390,6 +419,36 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .build();
+        let transport_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .build();
+        let nav_first_button = build_icon_button(
+            "media-skip-backward-symbolic",
+            "Go to beginning (Ctrl+Left)",
+        );
+        let nav_prev_button =
+            build_icon_button("media-seek-backward-symbolic", "Go back one frame (Left)");
+        let nav_play_button = build_icon_button(
+            "media-playback-start-symbolic",
+            "Play or pause preview playback (Space)",
+        );
+        let nav_next_button = build_icon_button(
+            "media-seek-forward-symbolic",
+            "Go forward one frame (Right)",
+        );
+        let nav_last_button =
+            build_icon_button("media-skip-forward-symbolic", "Go to end (Ctrl+Right)");
+        for button in [
+            &nav_first_button,
+            &nav_prev_button,
+            &nav_play_button,
+            &nav_next_button,
+            &nav_last_button,
+        ] {
+            transport_box.append(button);
+        }
         let timeline_hint = gtk::Label::new(Some(
             "Timeline: drag thumbnails to reorder. Drop image files anywhere in the window to import.",
         ));
@@ -406,6 +465,7 @@ impl Component for AppModel {
             .vscrollbar_policy(gtk::PolicyType::Never)
             .child(&timeline_strip)
             .build();
+        timeline_box.append(&transport_box);
         timeline_box.append(&timeline_hint);
         timeline_box.append(&frame_scroll);
         root.append(&timeline_box);
@@ -416,6 +476,7 @@ impl Component for AppModel {
         root.append(&status_label);
 
         let key_controller = gtk::EventControllerKey::new();
+        key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         key_controller.connect_key_pressed(clone!(
             #[strong]
             sender,
@@ -438,6 +499,26 @@ impl Component for AppModel {
                     }
                     (_, gdk::Key::Delete) | (_, gdk::Key::KP_Delete) => {
                         sender.input(AppMsg::RemoveSelection);
+                        true
+                    }
+                    (true, gdk::Key::Left) | (true, gdk::Key::KP_Left) => {
+                        sender.input(AppMsg::GoToBeginning);
+                        true
+                    }
+                    (false, gdk::Key::Left) | (false, gdk::Key::KP_Left) => {
+                        sender.input(AppMsg::StepBackward);
+                        true
+                    }
+                    (false, gdk::Key::space) | (false, gdk::Key::KP_Space) => {
+                        sender.input(AppMsg::TogglePlayback);
+                        true
+                    }
+                    (false, gdk::Key::Right) | (false, gdk::Key::KP_Right) => {
+                        sender.input(AppMsg::StepForward);
+                        true
+                    }
+                    (true, gdk::Key::Right) | (true, gdk::Key::KP_Right) => {
+                        sender.input(AppMsg::GoToEnd);
                         true
                     }
                     _ => false,
@@ -477,24 +558,95 @@ impl Component for AppModel {
             move |_| choose_export_dialog(&window, sender.clone())
         ));
 
-        duplicate_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::DuplicateSelection)));
-        copy_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::CopySelection)));
-        paste_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::PasteClipboard)));
-        remove_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::RemoveSelection)));
-        move_up_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::MoveSelectionUp)));
-        move_down_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::MoveSelectionDown)));
-        loop_dup_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::AppendDuplicateLoop)));
-        loop_reverse_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::AppendReverseLoop(true))));
-        loop_ping_pong_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::AppendReverseLoop(false))));
+        duplicate_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::DuplicateSelection)
+        ));
+        copy_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::CopySelection)
+        ));
+        paste_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::PasteClipboard)
+        ));
+        remove_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::RemoveSelection)
+        ));
+        move_up_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::MoveSelectionUp)
+        ));
+        move_down_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::MoveSelectionDown)
+        ));
+        loop_dup_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::AppendDuplicateLoop)
+        ));
+        loop_reverse_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::AppendReverseLoop(true))
+        ));
+        loop_ping_pong_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::AppendReverseLoop(false))
+        ));
+        nav_first_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::GoToBeginning)
+        ));
+        nav_prev_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::StepBackward)
+        ));
+        nav_play_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::TogglePlayback)
+        ));
+        nav_next_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::StepForward)
+        ));
+        nav_last_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::GoToEnd)
+        ));
         batch_duration_button.connect_clicked(clone!(
             #[strong]
             sender,
             #[strong]
             batch_duration_spin,
-            move |_| sender.input(AppMsg::ApplyBatchDuration(batch_duration_spin.value() as u32))
+            move |_| sender.input(AppMsg::ApplyBatchDuration(
+                batch_duration_spin.value() as u32
+            ))
         ));
-        rotate_left_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::RotateSelection(-1))));
-        rotate_right_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::RotateSelection(1))));
+        rotate_left_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::RotateSelection(-1))
+        ));
+        rotate_right_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::RotateSelection(1))
+        ));
         apply_transform_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -629,12 +781,21 @@ impl Component for AppModel {
             sender,
             move |entry| sender.input(AppMsg::SetRawArgs(entry.text().to_string()))
         ));
-        export_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::ExportNow)));
+        export_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::ExportNow)
+        ));
 
         install_import_drop_targets(&root, sender.clone());
 
         let widgets = AppWidgets {
             timeline_strip,
+            nav_first_button,
+            nav_prev_button,
+            nav_play_button,
+            nav_next_button,
+            nav_last_button,
             diagnostics_label,
             selection_label,
             status_label,
@@ -683,8 +844,30 @@ impl Component for AppModel {
             AppMsg::ImportPathsWithMode { paths, mode } => {
                 self.import_paths(paths, mode, &sender);
             }
+            AppMsg::GoToBeginning => self.navigate_to_boundary(false, &sender),
+            AppMsg::StepBackward => self.navigate_by_step(-1, &sender),
+            AppMsg::TogglePlayback => self.toggle_playback(&sender),
+            AppMsg::StepForward => self.navigate_by_step(1, &sender),
+            AppMsg::GoToEnd => self.navigate_to_boundary(true, &sender),
+            AppMsg::PlaybackAdvance { generation } => {
+                if generation == self.playback_generation && self.playback_active {
+                    if let Some(next_id) = self.following_frame_id() {
+                        self.select_single_frame(next_id, &sender);
+                        self.schedule_playback_advance(generation, &sender);
+                    } else {
+                        self.playback_active = false;
+                        self.playback_generation = self.playback_generation.wrapping_add(1);
+                        self.status = "Playback finished.".to_string();
+                    }
+                }
+            }
             AppMsg::SelectFrame { id, mode } => {
-                let ordered_ids: Vec<_> = self.timeline.frames().iter().map(|frame| frame.id).collect();
+                let ordered_ids: Vec<_> = self
+                    .timeline
+                    .frames()
+                    .iter()
+                    .map(|frame| frame.id)
+                    .collect();
                 let next = apply_selection(
                     &ordered_ids,
                     &self.selection,
@@ -707,20 +890,29 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ApplyBatchDuration(duration) => {
-                self.timeline.apply_duration(&self.selection, duration.max(10));
+                self.timeline
+                    .apply_duration(&self.selection, duration.max(10));
                 self.status = format!("Applied {} ms to selected frames.", duration.max(10));
             }
-            AppMsg::MoveSelectionUp => self.timeline.move_selection_up(&self.selection),
-            AppMsg::MoveSelectionDown => self.timeline.move_selection_down(&self.selection),
+            AppMsg::MoveSelectionUp => {
+                self.stop_playback(None);
+                self.timeline.move_selection_up(&self.selection)
+            }
+            AppMsg::MoveSelectionDown => {
+                self.stop_playback(None);
+                self.timeline.move_selection_down(&self.selection)
+            }
             AppMsg::DropFrameAt {
                 dragged_id,
                 target_index,
             } => {
+                self.stop_playback(None);
                 if self.timeline.move_frame_to_index(dragged_id, target_index) {
                     self.status = "Reordered frame.".to_string();
                 }
             }
             AppMsg::DuplicateSelection => {
+                self.stop_playback(None);
                 let inserted = self.timeline.duplicate_selected(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
@@ -739,6 +931,7 @@ impl Component for AppModel {
                 self.status = format!("Copied {} frame(s).", self.clipboard.len());
             }
             AppMsg::PasteClipboard => {
+                self.stop_playback(None);
                 let inserted = self
                     .timeline
                     .paste_after_selection(&self.selection, &self.clipboard);
@@ -749,6 +942,7 @@ impl Component for AppModel {
                 self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::RemoveSelection => {
+                self.stop_playback(None);
                 let removed = self.selection.len();
                 self.timeline.remove_selected(&self.selection);
                 self.selection.clear();
@@ -758,6 +952,7 @@ impl Component for AppModel {
                 self.status = format!("Removed {removed} frame(s).");
             }
             AppMsg::AppendDuplicateLoop => {
+                self.stop_playback(None);
                 let inserted = self.timeline.append_duplicate_loop(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
@@ -766,7 +961,10 @@ impl Component for AppModel {
                 self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::AppendReverseLoop(repeat_edges) => {
-                let inserted = self.timeline.append_reverse_loop(&self.selection, repeat_edges);
+                self.stop_playback(None);
+                let inserted = self
+                    .timeline
+                    .append_reverse_loop(&self.selection, repeat_edges);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
                 self.status = format!("Appended reverse loop with {} frame(s).", inserted.len());
@@ -793,7 +991,8 @@ impl Component for AppModel {
             }
             AppMsg::SetExportPreset(preset) => self.export_profile.apply_preset(preset),
             AppMsg::SetOutputPath(path) => {
-                self.last_output_path = (!path.trim().is_empty()).then_some(PathBuf::from(path.trim()));
+                self.last_output_path =
+                    (!path.trim().is_empty()).then_some(PathBuf::from(path.trim()));
             }
             AppMsg::SetOutputWidth(width) => {
                 self.export_profile.output_width = if width == 0 { None } else { Some(width) };
@@ -821,23 +1020,35 @@ impl Component for AppModel {
                     Err(err) => self.status = format!("Failed to save project: {err}"),
                 }
             }
-            AppMsg::OpenProject(path) => match load_project(&path) {
-                Ok(document) => {
-                    let ids: Vec<_> = document.frames.iter().map(|frame| frame.id).collect();
-                    self.timeline = Timeline::from_frames(document.frames);
-                    self.selection = ids.into_iter().collect();
-                    self.selection_anchor_id = self.timeline.frames().first().map(|frame| frame.id);
-                    self.export_profile = document.export_profile;
-                    self.last_output_path = document.last_output_path;
-                    self.preview_path = None;
-                    self.preview_frame_id = None;
-                    self.status = format!("Loaded project {}. Refreshing thumbnails...", path.display());
-                    let frame_ids = self.timeline.frames().iter().map(|frame| frame.id).collect();
-                    self.refresh_frame_jobs(frame_ids, &sender);
-                    self.queue_preview_for_primary_selection(&sender);
+            AppMsg::OpenProject(path) => {
+                self.stop_playback(None);
+                match load_project(&path) {
+                    Ok(document) => {
+                        let ids: Vec<_> = document.frames.iter().map(|frame| frame.id).collect();
+                        self.timeline = Timeline::from_frames(document.frames);
+                        self.selection = ids.into_iter().collect();
+                        self.selection_anchor_id =
+                            self.timeline.frames().first().map(|frame| frame.id);
+                        self.export_profile = document.export_profile;
+                        self.last_output_path = document.last_output_path;
+                        self.preview_path = None;
+                        self.preview_frame_id = None;
+                        self.status = format!(
+                            "Loaded project {}. Refreshing thumbnails...",
+                            path.display()
+                        );
+                        let frame_ids = self
+                            .timeline
+                            .frames()
+                            .iter()
+                            .map(|frame| frame.id)
+                            .collect();
+                        self.refresh_frame_jobs(frame_ids, &sender);
+                        self.queue_preview_for_primary_selection(&sender);
+                    }
+                    Err(err) => self.status = format!("Failed to load project: {err}"),
                 }
-                Err(err) => self.status = format!("Failed to load project: {err}"),
-            },
+            }
             AppMsg::ChooseOutputPath(path) => {
                 self.last_output_path = Some(path);
             }
@@ -857,7 +1068,8 @@ impl Component for AppModel {
                 let frames = self.timeline.frames().to_vec();
                 let profile = self.export_profile.clone();
                 sender.spawn_oneshot_command(move || CommandMsg::ExportFinished {
-                    result: export_animation(&frames, &profile, &output_path).map_err(|err| err.to_string()),
+                    result: export_animation(&frames, &profile, &output_path)
+                        .map_err(|err| err.to_string()),
                 });
             }
         }
@@ -922,24 +1134,62 @@ impl Component for AppModel {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
-        widgets.diagnostics_label.set_label(&self.diagnostics.summary());
+        widgets
+            .diagnostics_label
+            .set_label(&self.diagnostics.summary());
         let mut selection_summary = format!(
             "{} selected / {} total",
             self.selection.len(),
             self.timeline.frames().len()
         );
+        if self.playback_active {
+            selection_summary.push_str(" | playing");
+        }
         if self.thumbnails_pending > 0 {
-            selection_summary.push_str(&format!(" | {} thumbnail job(s) running", self.thumbnails_pending));
+            selection_summary.push_str(&format!(
+                " | {} thumbnail job(s) running",
+                self.thumbnails_pending
+            ));
         }
         if self.export_in_progress {
             selection_summary.push_str(" | export running");
         }
         widgets.selection_label.set_label(&selection_summary);
         widgets.status_label.set_label(&self.status);
-        widgets.command_preview_label.set_label(&self.command_preview);
+        widgets
+            .command_preview_label
+            .set_label(&self.command_preview);
+        set_button_icon(
+            &widgets.nav_play_button,
+            if self.playback_active {
+                "media-playback-pause-symbolic"
+            } else {
+                "media-playback-start-symbolic"
+            },
+        );
+
+        let frame_ids = self.timeline_frame_ids();
+        let has_frames = !frame_ids.is_empty();
+        let current_index = self.current_frame_index();
+        let last_index = frame_ids.len().checked_sub(1);
+        widgets
+            .nav_first_button
+            .set_sensitive(has_frames && current_index != Some(0));
+        widgets
+            .nav_prev_button
+            .set_sensitive(has_frames && current_index != Some(0));
+        widgets.nav_play_button.set_sensitive(has_frames);
+        widgets
+            .nav_next_button
+            .set_sensitive(has_frames && current_index != last_index);
+        widgets
+            .nav_last_button
+            .set_sensitive(has_frames && current_index != last_index);
 
         if let Some(path) = self.preview_path.as_ref() {
-            widgets.preview_picture.set_file(Some(&gio::File::for_path(path)));
+            widgets
+                .preview_picture
+                .set_file(Some(&gio::File::for_path(path)));
         } else {
             widgets.preview_picture.set_file(None::<&gio::File>);
         }
@@ -954,7 +1204,10 @@ impl Component for AppModel {
             widgets.output_entry.set_text(&output_text);
         }
         sync_combo_active_export_preset(&widgets.preset_combo, self.export_profile.preset);
-        sync_combo_active_encoder_preset(&widgets.encoder_combo, self.export_profile.encoder_preset);
+        sync_combo_active_encoder_preset(
+            &widgets.encoder_combo,
+            self.export_profile.encoder_preset,
+        );
         sync_combo_active_fit_mode(&widgets.fit_mode_combo, self.export_profile.fit_mode);
         set_spin_if_needed(&widgets.quality_spin, self.export_profile.quality as f64);
         set_spin_if_needed(
@@ -966,12 +1219,17 @@ impl Component for AppModel {
             self.export_profile.output_height.unwrap_or_default() as f64,
         );
         set_check_if_needed(&widgets.lossless_check, self.export_profile.lossless);
-        set_spin_if_needed(&widgets.cr_threshold_spin, self.export_profile.cr_threshold as f64);
+        set_spin_if_needed(
+            &widgets.cr_threshold_spin,
+            self.export_profile.cr_threshold as f64,
+        );
         set_spin_if_needed(&widgets.cr_size_spin, self.export_profile.cr_size as f64);
         set_spin_if_needed(&widgets.loop_spin, self.export_profile.loop_count as f64);
         set_check_if_needed(&widgets.overwrite_check, self.export_profile.overwrite);
         if widgets.raw_args_entry.text().as_str() != self.export_profile.raw_args {
-            widgets.raw_args_entry.set_text(&self.export_profile.raw_args);
+            widgets
+                .raw_args_entry
+                .set_text(&self.export_profile.raw_args);
         }
 
         self.sync_inspector_widgets(widgets);
@@ -998,6 +1256,7 @@ impl AppModel {
         mode: ImportMode,
         sender: &ComponentSender<Self>,
     ) {
+        self.stop_playback(None);
         let imported_ids = match mode {
             ImportMode::Append => self.timeline.import_paths(paths),
             ImportMode::Prepend => self.timeline.prepend_paths(paths),
@@ -1005,7 +1264,10 @@ impl AppModel {
         };
         self.selection = imported_ids.iter().copied().collect();
         self.selection_anchor_id = imported_ids.first().copied();
-        self.status = format!("Imported {} frame(s). Generating thumbnails...", imported_ids.len());
+        self.status = format!(
+            "Imported {} frame(s). Generating thumbnails...",
+            imported_ids.len()
+        );
         self.refresh_frame_jobs(imported_ids, sender);
         self.queue_preview_for_primary_selection(sender);
     }
@@ -1030,13 +1292,131 @@ impl AppModel {
         self.timeline.frames().iter().find(|frame| frame.id == id)
     }
 
+    fn timeline_frame_ids(&self) -> Vec<u64> {
+        self.timeline
+            .frames()
+            .iter()
+            .map(|frame| frame.id)
+            .collect()
+    }
+
+    fn current_frame_index(&self) -> Option<usize> {
+        let current = self.primary_selected_id()?;
+        self.timeline
+            .frames()
+            .iter()
+            .position(|frame| frame.id == current)
+    }
+
+    fn select_single_frame(&mut self, frame_id: u64, sender: &ComponentSender<Self>) {
+        if self.selection.len() == 1
+            && self.selection.contains(&frame_id)
+            && self.selection_anchor_id == Some(frame_id)
+        {
+            return;
+        }
+        self.selection.clear();
+        self.selection.insert(frame_id);
+        self.selection_anchor_id = Some(frame_id);
+        self.queue_preview_for_primary_selection(sender);
+    }
+
+    fn navigate_to_boundary(&mut self, end: bool, sender: &ComponentSender<Self>) {
+        self.stop_playback(None);
+        let frame_ids = self.timeline_frame_ids();
+        let target = if end {
+            frame_ids.last().copied()
+        } else {
+            frame_ids.first().copied()
+        };
+        let Some(frame_id) = target else {
+            self.status = "No frames in timeline.".to_string();
+            return;
+        };
+        self.select_single_frame(frame_id, sender);
+        self.status = if end {
+            "Moved to last frame.".to_string()
+        } else {
+            "Moved to first frame.".to_string()
+        };
+    }
+
+    fn navigate_by_step(&mut self, offset: isize, sender: &ComponentSender<Self>) {
+        self.stop_playback(None);
+        let frame_ids = self.timeline_frame_ids();
+        let Some(frame_id) = step_frame_id(&frame_ids, self.primary_selected_id(), offset) else {
+            self.status = "No frames in timeline.".to_string();
+            return;
+        };
+        self.select_single_frame(frame_id, sender);
+        self.status = if offset < 0 {
+            "Moved back one frame.".to_string()
+        } else {
+            "Moved forward one frame.".to_string()
+        };
+    }
+
+    fn toggle_playback(&mut self, sender: &ComponentSender<Self>) {
+        if self.playback_active {
+            self.stop_playback(Some("Playback paused."));
+            return;
+        }
+
+        let frame_ids = self.timeline_frame_ids();
+        let Some(frame_id) = playback_start_frame_id(&frame_ids, self.primary_selected_id()) else {
+            self.status = "No frames in timeline.".to_string();
+            return;
+        };
+
+        self.playback_generation = self.playback_generation.wrapping_add(1);
+        self.playback_active = true;
+        self.select_single_frame(frame_id, sender);
+        self.status = "Playback started.".to_string();
+        self.schedule_playback_advance(self.playback_generation, sender);
+    }
+
+    fn schedule_playback_advance(&self, generation: u64, sender: &ComponentSender<Self>) {
+        if !self.playback_active {
+            return;
+        }
+        let delay_ms = self
+            .primary_selected_frame()
+            .map(|frame| u64::from(frame.duration_ms.max(10)))
+            .unwrap_or(100);
+        let sender = sender.clone();
+        gtk::glib::timeout_add_local_once(Duration::from_millis(delay_ms), move || {
+            sender.input(AppMsg::PlaybackAdvance { generation });
+        });
+    }
+
+    fn following_frame_id(&self) -> Option<u64> {
+        let frame_ids = self.timeline_frame_ids();
+        following_frame_id(&frame_ids, self.primary_selected_id())
+    }
+
+    fn stop_playback(&mut self, status: Option<&str>) {
+        if self.playback_active {
+            self.playback_active = false;
+            self.playback_generation = self.playback_generation.wrapping_add(1);
+        }
+        if let Some(status) = status {
+            self.status = status.to_string();
+        }
+    }
+
     fn refresh_frame_jobs(&mut self, frame_ids: Vec<u64>, sender: &ComponentSender<Self>) {
         if frame_ids.is_empty() {
             return;
         }
         self.thumbnails_pending += frame_ids.len();
         for frame_id in frame_ids {
-            let Some(frame) = self.timeline.frames().iter().find(|frame| frame.id == frame_id).cloned() else {
+            let Some(frame) = self
+                .timeline
+                .frames()
+                .iter()
+                .find(|frame| frame.id == frame_id)
+                .cloned()
+            else {
                 self.thumbnails_pending = self.thumbnails_pending.saturating_sub(1);
                 continue;
             };
@@ -1068,6 +1448,8 @@ impl AppModel {
             self.preview_path = None;
             return;
         };
+        self.preview_frame_id = Some(frame.id);
+        self.preview_path = Some(immediate_preview_path(&frame));
         let frame_id = frame.id;
         let cache_dir = self.cache_dir.clone();
         sender.spawn_oneshot_command(move || {
@@ -1145,14 +1527,8 @@ impl AppModel {
             sync_combo_active_fit_mode(&widgets.inspector_fit_combo, FitMode::Contain);
             return;
         };
-        set_check_if_needed(
-            &widgets.flip_h_check,
-            frame.transform_spec.flip_horizontal,
-        );
-        set_check_if_needed(
-            &widgets.flip_v_check,
-            frame.transform_spec.flip_vertical,
-        );
+        set_check_if_needed(&widgets.flip_h_check, frame.transform_spec.flip_horizontal);
+        set_check_if_needed(&widgets.flip_v_check, frame.transform_spec.flip_vertical);
         let crop = frame.transform_spec.crop.unwrap_or(CropRect {
             x: 0,
             y: 0,
@@ -1163,16 +1539,13 @@ impl AppModel {
         set_spin_if_needed(&widgets.crop_y, crop.y as f64);
         set_spin_if_needed(&widgets.crop_w, crop.width as f64);
         set_spin_if_needed(&widgets.crop_h, crop.height as f64);
-        let resize = frame
-            .transform_spec
-            .resize
-            .unwrap_or(ResizeTarget { width: 0, height: 0 });
+        let resize = frame.transform_spec.resize.unwrap_or(ResizeTarget {
+            width: 0,
+            height: 0,
+        });
         set_spin_if_needed(&widgets.resize_w, resize.width as f64);
         set_spin_if_needed(&widgets.resize_h, resize.height as f64);
-        sync_combo_active_fit_mode(
-            &widgets.inspector_fit_combo,
-            frame.transform_spec.fit_mode,
-        );
+        sync_combo_active_fit_mode(&widgets.inspector_fit_combo, frame.transform_spec.fit_mode);
     }
 }
 
@@ -1221,10 +1594,7 @@ fn build_timeline_tile(
                 (false, true) => SelectionMode::Ctrl,
                 (false, false) => SelectionMode::Plain,
             };
-            sender.input(AppMsg::SelectFrame {
-                id: frame_id,
-                mode,
-            });
+            sender.input(AppMsg::SelectFrame { id: frame_id, mode });
         }
     ));
     tile.add_controller(click);
@@ -1250,25 +1620,19 @@ fn build_timeline_tile(
 
     let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
     let tile_for_drop = tile.clone();
-    drop_target.connect_enter(clone!(
-        move |_, x, _| {
-            set_tile_drop_class(&tile_for_drop, tile_drop_side(tile_for_drop.width(), x));
-            gdk::DragAction::MOVE
-        }
-    ));
+    drop_target.connect_enter(clone!(move |_, x, _| {
+        set_tile_drop_class(&tile_for_drop, tile_drop_side(tile_for_drop.width(), x));
+        gdk::DragAction::MOVE
+    }));
     let tile_for_motion = tile.clone();
-    drop_target.connect_motion(clone!(
-        move |_, x, _| {
-            set_tile_drop_class(&tile_for_motion, tile_drop_side(tile_for_motion.width(), x));
-            gdk::DragAction::MOVE
-        }
-    ));
+    drop_target.connect_motion(clone!(move |_, x, _| {
+        set_tile_drop_class(&tile_for_motion, tile_drop_side(tile_for_motion.width(), x));
+        gdk::DragAction::MOVE
+    }));
     let tile_for_leave = tile.clone();
-    drop_target.connect_leave(clone!(
-        move |_| {
-            clear_tile_drop_class(&tile_for_leave);
-        }
-    ));
+    drop_target.connect_leave(clone!(move |_| {
+        clear_tile_drop_class(&tile_for_leave);
+    }));
     let tile_for_commit = tile.clone();
     drop_target.connect_drop(clone!(
         #[strong]
@@ -1389,6 +1753,17 @@ fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
     gtk::Frame::builder().label(title).child(child).build()
 }
 
+fn build_icon_button(icon_name: &str, tooltip: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    set_button_icon(&button, icon_name);
+    button.set_tooltip_text(Some(tooltip));
+    button
+}
+
+fn set_button_icon(button: &gtk::Button, icon_name: &str) {
+    button.set_child(Some(&gtk::Image::from_icon_name(icon_name)));
+}
+
 fn install_app_css(window: &gtk::Window) {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(
@@ -1427,7 +1802,13 @@ fn install_app_css(window: &gtk::Window) {
     );
 }
 
-fn attach_labeled_spin(grid: &gtk::Grid, label: &str, spin: &gtk::SpinButton, column: i32, row: i32) {
+fn attach_labeled_spin(
+    grid: &gtk::Grid,
+    label: &str,
+    spin: &gtk::SpinButton,
+    column: i32,
+    row: i32,
+) {
     grid.attach(&gtk::Label::new(Some(label)), column, row, 1, 1);
     grid.attach(spin, column, row + 1, 1, 1);
 }
@@ -1627,7 +2008,8 @@ fn add_image_filter(dialog: &gtk::FileChooserNative) {
 }
 
 fn install_import_drop_targets(widget: &impl IsA<gtk::Widget>, sender: ComponentSender<AppModel>) {
-    let file_list_target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    let file_list_target =
+        gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
     file_list_target.connect_drop(clone!(
         #[strong]
         sender,
@@ -1635,7 +2017,11 @@ fn install_import_drop_targets(widget: &impl IsA<gtk::Widget>, sender: Component
             let Ok(files) = value.get::<gdk::FileList>() else {
                 return false;
             };
-            let paths: Vec<_> = files.files().into_iter().filter_map(|file| file.path()).collect();
+            let paths: Vec<_> = files
+                .files()
+                .into_iter()
+                .filter_map(|file| file.path())
+                .collect();
             if paths.is_empty() {
                 return false;
             }
@@ -1746,4 +2132,119 @@ fn parse_uri_list(text: &str) -> Vec<PathBuf> {
                 .or_else(|| Path::new(line).is_absolute().then(|| PathBuf::from(line)))
         })
         .collect()
+}
+
+fn immediate_preview_path(frame: &FrameItem) -> PathBuf {
+    frame
+        .thumbnail_path
+        .clone()
+        .unwrap_or_else(|| frame.source_path.clone())
+}
+
+fn step_frame_id(frame_ids: &[u64], current: Option<u64>, offset: isize) -> Option<u64> {
+    if frame_ids.is_empty() {
+        return None;
+    }
+
+    let current_index = current
+        .and_then(|frame_id| {
+            frame_ids
+                .iter()
+                .position(|candidate| *candidate == frame_id)
+        })
+        .unwrap_or(0);
+
+    let target_index = if offset < 0 {
+        current_index.saturating_sub(offset.unsigned_abs())
+    } else {
+        current_index
+            .saturating_add(offset as usize)
+            .min(frame_ids.len().saturating_sub(1))
+    };
+
+    frame_ids.get(target_index).copied()
+}
+
+fn playback_start_frame_id(frame_ids: &[u64], current: Option<u64>) -> Option<u64> {
+    if frame_ids.is_empty() {
+        return None;
+    }
+
+    match current.and_then(|frame_id| {
+        frame_ids
+            .iter()
+            .position(|candidate| *candidate == frame_id)
+    }) {
+        Some(index) if index + 1 < frame_ids.len() => frame_ids.get(index).copied(),
+        _ => frame_ids.first().copied(),
+    }
+}
+
+fn following_frame_id(frame_ids: &[u64], current: Option<u64>) -> Option<u64> {
+    let current_index = current.and_then(|frame_id| {
+        frame_ids
+            .iter()
+            .position(|candidate| *candidate == frame_id)
+    })?;
+    frame_ids.get(current_index + 1).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::{
+        following_frame_id, immediate_preview_path, playback_start_frame_id, step_frame_id,
+    };
+    use crate::types::{FitMode, FrameItem, TransformSpec};
+
+    #[test]
+    fn step_frame_navigation_clamps_to_timeline_bounds() {
+        let frame_ids = vec![10, 20, 30];
+
+        assert_eq!(step_frame_id(&frame_ids, Some(10), -1), Some(10));
+        assert_eq!(step_frame_id(&frame_ids, Some(20), -1), Some(10));
+        assert_eq!(step_frame_id(&frame_ids, Some(20), 1), Some(30));
+        assert_eq!(step_frame_id(&frame_ids, Some(30), 1), Some(30));
+    }
+
+    #[test]
+    fn playback_starts_from_first_frame_when_at_end_or_unset() {
+        let frame_ids = vec![10, 20, 30];
+
+        assert_eq!(playback_start_frame_id(&frame_ids, None), Some(10));
+        assert_eq!(playback_start_frame_id(&frame_ids, Some(20)), Some(20));
+        assert_eq!(playback_start_frame_id(&frame_ids, Some(30)), Some(10));
+    }
+
+    #[test]
+    fn following_frame_only_exists_before_end() {
+        let frame_ids = vec![10, 20, 30];
+
+        assert_eq!(following_frame_id(&frame_ids, Some(10)), Some(20));
+        assert_eq!(following_frame_id(&frame_ids, Some(20)), Some(30));
+        assert_eq!(following_frame_id(&frame_ids, Some(30)), None);
+    }
+
+    #[test]
+    fn immediate_preview_prefers_thumbnail_when_available() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec {
+                rotate_quarter_turns: 0,
+                flip_horizontal: false,
+                flip_vertical: false,
+                crop: None,
+                resize: None,
+                fit_mode: FitMode::Contain,
+            },
+            thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(immediate_preview_path(&frame), PathBuf::from("thumb.png"));
+    }
 }

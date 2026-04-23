@@ -33,6 +33,24 @@ No active tasks.
 - Verification: `cargo build`, `cargo test`, `timeout 5s cargo run`
 - Notes: Added window-content drop targets for `gdk::FileList`, `gio::File`, and URI text drops. Interactive desktop drag-and-drop behavior was not manually exercised in this environment.
 
+### 2026-04-23 - Add playback and timeline navigation
+
+- Status: Done
+- Request: Add timeline playback in the preview area with spacebar, plus navigation buttons and keymaps for beginning/back/play/forward/end.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/timeline.rs`, `src/thumbnail.rs`, `src/types.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: Playback advances the selected frame through the preview using per-frame duration timing. Interactive keyboard and button behavior was not manually exercised in this environment.
+
+### 2026-04-23 - Refine playback transport behavior
+
+- Status: Done
+- Request: Keep space bound to playback, move transport controls to the top of the timeline with icons, and make preview updates visible during playback.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: The global key handler now uses capture phase so `Space` triggers playback before focused buttons can open dialogs. Preview updates now switch immediately to a cached frame image while the async full preview render catches up.
+
 ## Parking Lot
 
 - Consider adding automated GTK smoke or interaction tests if the project later adopts a GUI testing strategy.

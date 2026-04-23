@@ -46,7 +46,8 @@ pub fn build_effective_command(
     }
 
     if !profile.raw_args.trim().is_empty() {
-        let raw = shlex::split(&profile.raw_args).ok_or_else(|| anyhow!("invalid raw ffmpeg arguments"))?;
+        let raw = shlex::split(&profile.raw_args)
+            .ok_or_else(|| anyhow!("invalid raw ffmpeg arguments"))?;
         args.extend(raw);
     }
 
@@ -54,7 +55,11 @@ pub fn build_effective_command(
     Ok(args)
 }
 
-pub fn build_command_preview(manifest_path: &Path, output_path: &Path, profile: &ExportProfile) -> String {
+pub fn build_command_preview(
+    manifest_path: &Path,
+    output_path: &Path,
+    profile: &ExportProfile,
+) -> String {
     match build_effective_command(manifest_path, output_path, profile) {
         Ok(args) => format!("ffmpeg {}", shell_join(&args)),
         Err(err) => format!("Invalid advanced args: {err}"),
@@ -66,7 +71,11 @@ pub fn export_animation(
     profile: &ExportProfile,
     output_path: &Path,
 ) -> anyhow::Result<ExportJob> {
-    let enabled_frames: Vec<_> = frames.iter().filter(|frame| frame.enabled).cloned().collect();
+    let enabled_frames: Vec<_> = frames
+        .iter()
+        .filter(|frame| frame.enabled)
+        .cloned()
+        .collect();
     if enabled_frames.is_empty() {
         bail!("no enabled frames to export");
     }
@@ -76,7 +85,9 @@ pub fn export_animation(
     fs::create_dir_all(&rendered_dir).context("create rendered frame dir")?;
 
     let resize_target = match (profile.output_width, profile.output_height) {
-        (Some(width), Some(height)) if width > 0 && height > 0 => Some(ResizeTarget { width, height }),
+        (Some(width), Some(height)) if width > 0 && height > 0 => {
+            Some(ResizeTarget { width, height })
+        }
         _ => None,
     };
 
@@ -117,13 +128,13 @@ pub fn write_concat_manifest(path: &Path, entries: &[(PathBuf, u32)]) -> anyhow:
 
     let mut manifest = String::from("ffconcat version 1.0\n");
     for (path_entry, duration_ms) in entries {
+        writeln!(&mut manifest, "file '{}'", escape_manifest_path(path_entry)).unwrap();
         writeln!(
             &mut manifest,
-            "file '{}'",
-            escape_manifest_path(path_entry)
+            "duration {:.3}",
+            *duration_ms as f32 / 1000.0
         )
         .unwrap();
-        writeln!(&mut manifest, "duration {:.3}", *duration_ms as f32 / 1000.0).unwrap();
     }
     writeln!(
         &mut manifest,
@@ -131,7 +142,8 @@ pub fn write_concat_manifest(path: &Path, entries: &[(PathBuf, u32)]) -> anyhow:
         escape_manifest_path(&entries.last().unwrap().0)
     )
     .unwrap();
-    fs::write(path, manifest).with_context(|| format!("write concat manifest {}", path.display()))?;
+    fs::write(path, manifest)
+        .with_context(|| format!("write concat manifest {}", path.display()))?;
     Ok(())
 }
 
@@ -142,7 +154,10 @@ fn escape_manifest_path(path: &Path) -> String {
 fn shell_join(args: &[String]) -> String {
     args.iter()
         .map(|arg| {
-            if arg.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_./=:".contains(ch)) {
+            if arg
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || "-_./=:".contains(ch))
+            {
                 arg.clone()
             } else {
                 format!("'{}'", arg.replace('\'', "'\\''"))
@@ -177,7 +192,10 @@ mod tests {
         let path = dir.path().join("frames.ffconcat");
         write_concat_manifest(
             &path,
-            &[(dir.path().join("a.png"), 100), (dir.path().join("b.png"), 250)],
+            &[
+                (dir.path().join("a.png"), 100),
+                (dir.path().join("b.png"), 250),
+            ],
         )
         .unwrap();
         let text = fs::read_to_string(path).unwrap();
@@ -202,7 +220,12 @@ mod tests {
             raw_args: "-metadata title=test".to_string(),
         };
 
-        let args = build_effective_command(Path::new("frames.ffconcat"), Path::new("out.webp"), &profile).unwrap();
+        let args = build_effective_command(
+            Path::new("frames.ffconcat"),
+            Path::new("out.webp"),
+            &profile,
+        )
+        .unwrap();
         assert!(args.contains(&"libwebp_anim".to_string()));
         assert!(args.contains(&"title=test".to_string()));
     }

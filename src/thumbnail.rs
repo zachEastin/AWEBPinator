@@ -8,7 +8,8 @@ use crate::types::{CropRect, FitMode, FrameItem, ResizeTarget, TransformSpec};
 
 pub fn ensure_cache_dir() -> anyhow::Result<PathBuf> {
     let path = std::env::temp_dir().join("awebpinator-cache");
-    fs::create_dir_all(&path).with_context(|| format!("create thumbnail cache {}", path.display()))?;
+    fs::create_dir_all(&path)
+        .with_context(|| format!("create thumbnail cache {}", path.display()))?;
     Ok(path)
 }
 
@@ -109,8 +110,12 @@ fn crop_image(image: DynamicImage, crop: CropRect) -> DynamicImage {
 
 fn fit_image(image: DynamicImage, resize: ResizeTarget, fit_mode: FitMode) -> DynamicImage {
     match fit_mode {
-        FitMode::Stretch => image.resize_exact(resize.width, resize.height, imageops::FilterType::Lanczos3),
-        FitMode::Contain => image.resize(resize.width, resize.height, imageops::FilterType::Lanczos3),
+        FitMode::Stretch => {
+            image.resize_exact(resize.width, resize.height, imageops::FilterType::Lanczos3)
+        }
+        FitMode::Contain => {
+            image.resize(resize.width, resize.height, imageops::FilterType::Lanczos3)
+        }
         FitMode::Cover => cover_image(image, resize),
     }
 }
