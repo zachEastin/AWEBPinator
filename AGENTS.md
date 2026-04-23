@@ -1,0 +1,96 @@
+# AWEBPinator Agent Notes
+
+This file is for future agents working in this repository.
+
+## Project Summary
+
+- Desktop app for Linux/Fedora
+- Rust + GTK4 + Relm4
+- Uses system `ffmpeg` and `ffprobe` to export animated WebP files
+- Main code lives in `src/`
+
+## Environment Expectations
+
+- OS target: Fedora Linux
+- Required tools:
+  - `cargo`
+  - `ffmpeg`
+  - `ffprobe`
+  - GTK4 development libraries
+
+If the app fails very early during startup, check for GTK/display-related initialization issues first.
+
+## Core Commands
+
+Run these from repo root:
+
+```bash
+cargo build
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+Run the app:
+
+```bash
+cargo run
+```
+
+If you need a bounded verification run from the terminal, use:
+
+```bash
+timeout 5s cargo run
+```
+
+That is useful for confirming startup regressions without leaving a GTK process running forever.
+
+## Verification Requirements
+
+Do not treat `cargo test` alone as sufficient for UI changes.
+
+If you change any of the following, you should run the app at least briefly:
+- GTK layout
+- selection behavior
+- drag/drop or reorder behavior
+- preview rendering
+- startup/init code
+- file import flows
+- export controls
+
+Minimum expected verification for UI-affecting changes:
+
+1. `cargo build`
+2. `cargo test`
+3. `cargo run` or `timeout 5s cargo run`
+
+If the change is specifically visual or interaction-heavy, prefer a real interactive run over only `timeout`.
+
+## Current UI Shape
+
+- Main preview/editor occupies the main body
+- Timeline is a horizontal thumbnail strip along the bottom
+- Timeline tiles should currently show only:
+  - preview
+  - frame number
+  - original filename
+- Selection is shown by a blue background on the full tile area
+- Reordering is intended to happen by dragging the tile itself
+
+When editing the timeline UI, preserve that interaction model unless the user explicitly asks to change it.
+
+## Repo-Specific Notes
+
+- CSS setup must happen after GTK has a display. Do not call `relm4::set_global_css(...)` before GTK app/window initialization.
+- The current project includes VS Code configs under `.vscode/` for build/test/debug tasks.
+- Use repo-local docs as the source of truth:
+  - `README.md` for user-facing build/run/test steps
+  - `.vscode/README.md` for editor workflow notes
+
+## When Updating Docs
+
+If you change build/test/run expectations or verification workflow, update:
+- `README.md`
+- `AGENTS.md`
+
+If the change affects VS Code workflows, also update:
+- `.vscode/README.md`
