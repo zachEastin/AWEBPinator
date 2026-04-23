@@ -23,6 +23,7 @@ pub fn run() {
 #[derive(Debug)]
 pub enum AppMsg {
     ImportPaths(Vec<PathBuf>),
+    SelectFrame { id: u64, additive: bool },
     ToggleSelected(u64, bool),
     ToggleEnabled(u64, bool),
     SetFrameDuration(u64, u32),
@@ -101,7 +102,7 @@ pub struct AppModel {
 }
 
 pub struct AppWidgets {
-    frame_list: gtk::ListBox,
+    timeline_strip: gtk::Box,
     diagnostics_label: gtk::Label,
     selection_label: gtk::Label,
     status_label: gtk::Label,
@@ -144,7 +145,8 @@ impl Component for AppModel {
         gtk::Window::builder()
             .title("AWEBPinator")
             .default_width(1480)
-            .default_height(960)
+            .default_height(820)
+            .resizable(true)
             .build()
     }
 
@@ -153,6 +155,7 @@ impl Component for AppModel {
         window: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        install_app_css(&window);
         let cache_dir = ensure_cache_dir().unwrap_or_else(|_| std::env::temp_dir());
         let diagnostics = collect_diagnostics();
         let mut model = AppModel {
@@ -221,6 +224,7 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Horizontal)
             .wide_handle(true)
             .build();
+        paned.set_vexpand(true);
         root.append(&paned);
 
         let left_box = gtk::Box::builder()
@@ -234,23 +238,6 @@ impl Component for AppModel {
         let selection_label = gtk::Label::new(Some("No frames selected"));
         selection_label.set_xalign(0.0);
         left_box.append(&selection_label);
-
-        let frame_list = gtk::ListBox::new();
-        frame_list.set_selection_mode(gtk::SelectionMode::None);
-        frame_list.set_hexpand(true);
-        frame_list.set_vexpand(true);
-        let frame_scroll = gtk::ScrolledWindow::builder()
-            .hexpand(true)
-            .vexpand(true)
-            .child(&frame_list)
-            .build();
-        left_box.append(&frame_scroll);
-
-        let timeline_hint = gtk::Label::new(Some(
-            "Drag row handles to reorder frames. Drop image files here to import.",
-        ));
-        timeline_hint.set_xalign(0.0);
-        left_box.append(&timeline_hint);
 
         let batch_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -271,7 +258,13 @@ impl Component for AppModel {
             .margin_start(8)
             .width_request(450)
             .build();
-        paned.set_end_child(Some(&right_box));
+        let right_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .min_content_width(420)
+            .child(&right_box)
+            .build();
+        paned.set_end_child(Some(&right_scroll));
 
         let diagnostics_label = gtk::Label::new(None);
         diagnostics_label.set_xalign(0.0);
@@ -282,17 +275,19 @@ impl Component for AppModel {
         let preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
+            .vexpand(true)
             .build();
         let preview_picture = gtk::Picture::new();
-        preview_picture.set_size_request(400, 320);
+        preview_picture.set_size_request(720, 360);
         preview_picture.set_can_shrink(true);
         preview_picture.set_hexpand(true);
+        preview_picture.set_vexpand(true);
         let preview_meta = gtk::Label::new(Some("Select a frame to inspect it."));
         preview_meta.set_xalign(0.0);
         preview_meta.set_wrap(true);
         preview_box.append(&preview_picture);
         preview_box.append(&preview_meta);
-        right_box.append(&section("Selected Frame Preview", &preview_box));
+        left_box.append(&section("Selected Frame Preview", &preview_box));
 
         let transform_grid = gtk::Grid::builder()
             .column_spacing(8)
@@ -380,6 +375,30 @@ impl Component for AppModel {
         command_preview_label.set_wrap(true);
         command_preview_label.set_selectable(true);
         right_box.append(&section("Effective Command", &command_preview_label));
+
+        let timeline_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        let timeline_hint = gtk::Label::new(Some(
+            "Timeline: drag thumbnails to reorder. Drop image files here to import.",
+        ));
+        timeline_hint.set_xalign(0.0);
+        let timeline_strip = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .hexpand(true)
+            .build();
+        let frame_scroll = gtk::ScrolledWindow::builder()
+            .hexpand(true)
+            .min_content_height(150)
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .child(&timeline_strip)
+            .build();
+        timeline_box.append(&timeline_hint);
+        timeline_box.append(&frame_scroll);
+        root.append(&timeline_box);
 
         let status_label = gtk::Label::new(None);
         status_label.set_xalign(0.0);
@@ -584,10 +603,10 @@ impl Component for AppModel {
                 false
             }
         ));
-        frame_list.add_controller(import_drop_target);
+        timeline_strip.add_controller(import_drop_target);
 
         let widgets = AppWidgets {
-            frame_list,
+            timeline_strip,
             diagnostics_label,
             selection_label,
             status_label,
@@ -634,6 +653,17 @@ impl Component for AppModel {
                     self.refresh_frame_jobs(imported_ids, &sender);
                     self.queue_preview_for_primary_selection(&sender);
                 }
+            }
+            AppMsg::SelectFrame { id, additive } => {
+                if additive {
+                    if !self.selection.insert(id) {
+                        self.selection.remove(&id);
+                    }
+                } else {
+                    self.selection.clear();
+                    self.selection.insert(id);
+                }
+                self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::ToggleSelected(id, selected) => {
                 if selected {
@@ -917,18 +947,21 @@ impl Component for AppModel {
 
         self.sync_inspector_widgets(widgets);
 
-        while let Some(child) = widgets.frame_list.first_child() {
-            widgets.frame_list.remove(&child);
+        while let Some(child) = widgets.timeline_strip.first_child() {
+            widgets.timeline_strip.remove(&child);
         }
 
         for (index, frame) in self.timeline.frames().iter().enumerate() {
-            widgets.frame_list.append(&build_frame_row(
+            widgets.timeline_strip.append(&build_timeline_tile(
                 frame,
                 index,
                 self.selection.contains(&frame.id),
                 sender.clone(),
             ));
         }
+        widgets
+            .timeline_strip
+            .append(&build_timeline_end_drop_zone(self.timeline.frames().len(), sender));
     }
 }
 
@@ -1099,110 +1132,83 @@ impl AppModel {
     }
 }
 
-fn build_frame_row(
+fn build_timeline_tile(
     frame: &FrameItem,
     index: usize,
     selected: bool,
     sender: ComponentSender<AppModel>,
-) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
+) -> gtk::Box {
     let frame_id = frame.id;
-    let row_box = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(10)
+    let tile = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
         .margin_top(6)
         .margin_bottom(6)
         .margin_start(6)
         .margin_end(6)
+        .width_request(132)
         .build();
-    row.set_child(Some(&row_box));
+    tile.add_css_class("timeline-tile");
+    if selected {
+        tile.add_css_class("timeline-tile-selected");
+    }
 
-    let drag_handle = gtk::Button::with_label("↕");
     let drag_source = gtk::DragSource::builder()
         .actions(gdk::DragAction::MOVE)
         .build();
     drag_source.set_content(Some(&gdk::ContentProvider::for_value(
         &frame_id.to_string().to_value(),
     )));
-    drag_handle.add_controller(drag_source);
-    row_box.append(&drag_handle);
+    tile.add_controller(drag_source);
 
-    let select = gtk::CheckButton::new();
-    select.set_active(selected);
-    select.connect_toggled(clone!(
+    let click = gtk::GestureClick::new();
+    click.set_button(0);
+    click.connect_pressed(clone!(
         #[strong]
         sender,
-        move |check| sender.input(AppMsg::ToggleSelected(frame_id, check.is_active()))
+        move |gesture, _, _, _| {
+            let additive = gesture
+                .current_event_state()
+                .contains(gdk::ModifierType::CONTROL_MASK);
+            sender.input(AppMsg::SelectFrame {
+                id: frame_id,
+                additive,
+            });
+        }
     ));
-    row_box.append(&select);
+    tile.add_controller(click);
 
     let picture = if let Some(path) = frame.thumbnail_path.as_ref() {
         gtk::Picture::for_filename(path)
     } else {
         gtk::Picture::new()
     };
-    picture.set_size_request(80, 80);
+    picture.set_size_request(120, 120);
     picture.set_can_shrink(true);
-    row_box.append(&picture);
+    tile.append(&picture);
 
-    let meta = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(4)
-        .hexpand(true)
-        .build();
-    let title = gtk::Label::new(Some(&format!("{:03} {}", index + 1, frame.file_name())));
+    let title = gtk::Label::new(Some(&format!("Frame {:03}", index + 1)));
     title.set_xalign(0.0);
-    let dims = frame
-        .source_dimensions
-        .map(|(w, h)| format!("{w}x{h}"))
-        .unwrap_or_else(|| "unknown size".to_string());
-    let subtitle = gtk::Label::new(Some(&format!(
-        "{} | {} ms | {}",
-        dims,
-        frame.duration_ms,
-        if frame.enabled { "enabled" } else { "disabled" }
-    )));
-    subtitle.set_xalign(0.0);
-    meta.append(&title);
-    meta.append(&subtitle);
-    row_box.append(&meta);
+    tile.append(&title);
 
-    let controls = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(6)
-        .build();
-    let duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
-    duration_spin.set_value(frame.duration_ms as f64);
-    duration_spin.connect_value_changed(clone!(
-        #[strong]
-        sender,
-        move |spin| sender.input(AppMsg::SetFrameDuration(frame_id, spin.value() as u32))
-    ));
-    let enabled_check = gtk::CheckButton::with_label("On");
-    enabled_check.set_active(frame.enabled);
-    enabled_check.connect_toggled(clone!(
-        #[strong]
-        sender,
-        move |check| sender.input(AppMsg::ToggleEnabled(frame_id, check.is_active()))
-    ));
-    controls.append(&gtk::Label::new(Some("Duration")));
-    controls.append(&duration_spin);
-    controls.append(&enabled_check);
-    row_box.append(&controls);
+    let subtitle = gtk::Label::new(Some(&frame.file_name()));
+    subtitle.set_xalign(0.0);
+    subtitle.set_wrap(true);
+    subtitle.set_max_width_chars(14);
+    tile.append(&subtitle);
 
     let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
-    let row_for_drop = row.clone();
     drop_target.connect_drop(clone!(
         #[strong]
         sender,
-        move |_, value, _, y| {
+        move |_, value, x, _| {
             let Ok(text) = value.get::<String>() else {
                 return false;
             };
             let Ok(dragged_id) = text.parse::<u64>() else {
                 return false;
             };
-            let target_index = index + usize::from((y as i32) > row_for_drop.height() / 2);
+            let target_index = index + usize::from((x as i32) > 66);
             sender.input(AppMsg::DropFrameAt {
                 dragged_id,
                 target_index,
@@ -1210,9 +1216,43 @@ fn build_frame_row(
             true
         }
     ));
-    row.add_controller(drop_target);
+    tile.add_controller(drop_target);
 
-    row
+    tile
+}
+
+fn build_timeline_end_drop_zone(index: usize, sender: ComponentSender<AppModel>) -> gtk::Box {
+    let zone = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .width_request(48)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(4)
+        .margin_end(4)
+        .build();
+    let label = gtk::Label::new(Some("Drop\nend"));
+    label.add_css_class("dim-label");
+    zone.append(&label);
+    let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+    drop_target.connect_drop(clone!(
+        #[strong]
+        sender,
+        move |_, value, _, _| {
+            let Ok(text) = value.get::<String>() else {
+                return false;
+            };
+            let Ok(dragged_id) = text.parse::<u64>() else {
+                return false;
+            };
+            sender.input(AppMsg::DropFrameAt {
+                dragged_id,
+                target_index: index + 1,
+            });
+            true
+        }
+    ));
+    zone.add_controller(drop_target);
+    zone
 }
 
 fn combo_for_fit_mode() -> gtk::ComboBoxText {
@@ -1309,6 +1349,30 @@ fn sync_combo_active_encoder_preset(combo: &gtk::ComboBoxText, preset: EncoderPr
 
 fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
     gtk::Frame::builder().label(title).child(child).build()
+}
+
+fn install_app_css(window: &gtk::Window) {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(
+        "
+        .timeline-tile {
+            border-radius: 10px;
+            padding: 6px;
+            background: transparent;
+        }
+        .timeline-tile-selected {
+            background: alpha(@accent_bg_color, 0.85);
+        }
+        ",
+    );
+
+    let display = gtk::prelude::WidgetExt::display(window);
+    #[allow(deprecated)]
+    gtk::StyleContext::add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
 }
 
 fn attach_labeled_spin(grid: &gtk::Grid, label: &str, spin: &gtk::SpinButton, column: i32, row: i32) {
