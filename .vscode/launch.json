@@ -1,0 +1,26 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug AWEBPinator",
+      "type": "lldb",
+      "request": "launch",
+      "cargo": {
+        "args": [
+          "build",
+          "--bin",
+          "awebpinator"
+        ],
+        "filter": {
+          "name": "awebpinator",
+          "kind": "bin"
+        }
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "RUST_BACKTRACE": "1"
+      }
+    }
+  ]
+}
