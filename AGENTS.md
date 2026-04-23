@@ -80,6 +80,7 @@ When editing the timeline UI, preserve that interaction model unless the user ex
 
 ## Repo-Specific Notes
 
+- This repo has a local AI workflow system under `.ai/`. Future agents should start with `.ai/agent.md` and keep `.ai/task_tracker.md` updated while working.
 - CSS setup must happen after GTK has a display. Do not call `relm4::set_global_css(...)` before GTK app/window initialization.
 - The current project includes VS Code configs under `.vscode/` for build/test/debug tasks.
 - Use repo-local docs as the source of truth:
