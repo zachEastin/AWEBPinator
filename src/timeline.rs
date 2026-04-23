@@ -1,0 +1,244 @@
+use std::collections::BTreeSet;
+use std::path::PathBuf;
+
+use crate::types::FrameItem;
+
+#[derive(Debug, Clone, Default)]
+pub struct Timeline {
+    frames: Vec<FrameItem>,
+    next_id: u64,
+}
+
+impl Timeline {
+    pub fn new() -> Self {
+        Self {
+            frames: Vec::new(),
+            next_id: 1,
+        }
+    }
+
+    pub fn from_frames(frames: Vec<FrameItem>) -> Self {
+        let next_id = frames.iter().map(|frame| frame.id).max().unwrap_or(0) + 1;
+        Self { frames, next_id }
+    }
+
+    pub fn frames(&self) -> &[FrameItem] {
+        &self.frames
+    }
+
+    pub fn frames_mut(&mut self) -> &mut [FrameItem] {
+        &mut self.frames
+    }
+
+    pub fn clone_with_new_id(&mut self, frame: &FrameItem) -> FrameItem {
+        let mut cloned = frame.clone();
+        cloned.id = self.next_id;
+        self.next_id += 1;
+        cloned
+    }
+
+    pub fn import_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<u64> {
+        let mut imported = Vec::new();
+        for path in paths {
+            let id = self.next_id;
+            self.next_id += 1;
+            self.frames.push(FrameItem {
+                id,
+                source_path: path,
+                duration_ms: 100,
+                transform_spec: Default::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: None,
+            });
+            imported.push(id);
+        }
+        imported
+    }
+
+    pub fn selected_indices(selection: &BTreeSet<u64>, frames: &[FrameItem]) -> Vec<usize> {
+        frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| selection.contains(&frame.id).then_some(index))
+            .collect()
+    }
+
+    pub fn remove_selected(&mut self, selection: &BTreeSet<u64>) {
+        self.frames.retain(|frame| !selection.contains(&frame.id));
+    }
+
+    pub fn duplicate_selected(&mut self, selection: &BTreeSet<u64>) -> Vec<u64> {
+        let indices = Self::selected_indices(selection, &self.frames);
+        let mut inserted_ids = Vec::new();
+        let mut offset = 0usize;
+        for index in indices {
+            let source = self.frames[index + offset].clone();
+            let new_frame = self.clone_with_new_id(&source);
+            let insert_at = index + offset + 1;
+            inserted_ids.push(new_frame.id);
+            self.frames.insert(insert_at, new_frame);
+            offset += 1;
+        }
+        inserted_ids
+    }
+
+    pub fn paste_after_selection(
+        &mut self,
+        selection: &BTreeSet<u64>,
+        clipboard: &[FrameItem],
+    ) -> Vec<u64> {
+        if clipboard.is_empty() {
+            return Vec::new();
+        }
+        let after_index = Self::selected_indices(selection, &self.frames)
+            .into_iter()
+            .max()
+            .map(|index| index + 1)
+            .unwrap_or(self.frames.len());
+        let mut inserted_ids = Vec::new();
+        for (offset, frame) in clipboard.iter().enumerate() {
+            let new_frame = self.clone_with_new_id(frame);
+            inserted_ids.push(new_frame.id);
+            self.frames.insert(after_index + offset, new_frame);
+        }
+        inserted_ids
+    }
+
+    pub fn move_selection_up(&mut self, selection: &BTreeSet<u64>) {
+        let indices = Self::selected_indices(selection, &self.frames);
+        for index in indices {
+            if index > 0 && !selection.contains(&self.frames[index - 1].id) {
+                self.frames.swap(index - 1, index);
+            }
+        }
+    }
+
+    pub fn move_selection_down(&mut self, selection: &BTreeSet<u64>) {
+        let mut indices = Self::selected_indices(selection, &self.frames);
+        indices.reverse();
+        for index in indices {
+            if index + 1 < self.frames.len() && !selection.contains(&self.frames[index + 1].id) {
+                self.frames.swap(index, index + 1);
+            }
+        }
+    }
+
+    pub fn apply_duration(&mut self, selection: &BTreeSet<u64>, duration_ms: u32) {
+        for frame in &mut self.frames {
+            if selection.contains(&frame.id) {
+                frame.duration_ms = duration_ms;
+            }
+        }
+    }
+
+    pub fn append_duplicate_loop(&mut self, selection: &BTreeSet<u64>) -> Vec<u64> {
+        let source = self.selection_or_all(selection);
+        let mut inserted = Vec::new();
+        for frame in source {
+            let new_frame = self.clone_with_new_id(&frame);
+            inserted.push(new_frame.id);
+            self.frames.push(new_frame);
+        }
+        inserted
+    }
+
+    pub fn append_reverse_loop(&mut self, selection: &BTreeSet<u64>, repeat_edges: bool) -> Vec<u64> {
+        let mut source = self.selection_or_all(selection);
+        if !repeat_edges && source.len() > 1 {
+            source.pop();
+            source.remove(0);
+        }
+        source.reverse();
+        let mut inserted = Vec::new();
+        for frame in source {
+            let new_frame = self.clone_with_new_id(&frame);
+            inserted.push(new_frame.id);
+            self.frames.push(new_frame);
+        }
+        inserted
+    }
+
+    fn selection_or_all(&self, selection: &BTreeSet<u64>) -> Vec<FrameItem> {
+        let frames: Vec<_> = self
+            .frames
+            .iter()
+            .filter(|frame| selection.is_empty() || selection.contains(&frame.id))
+            .cloned()
+            .collect();
+        frames
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    use super::Timeline;
+
+    fn ids(set: &[u64]) -> BTreeSet<u64> {
+        set.iter().copied().collect()
+    }
+
+    #[test]
+    fn duplicate_and_paste_preserve_order() {
+        let mut timeline = Timeline::new();
+        let imported = timeline.import_paths([
+            PathBuf::from("a.png"),
+            PathBuf::from("b.png"),
+            PathBuf::from("c.png"),
+        ]);
+
+        let selection = ids(&[imported[1]]);
+        let inserted = timeline.duplicate_selected(&selection);
+        assert_eq!(timeline.frames().len(), 4);
+        assert_eq!(timeline.frames()[2].source_path, PathBuf::from("b.png"));
+
+        let clipboard = vec![timeline.frames()[0].clone(), timeline.frames()[2].clone()];
+        let pasted = timeline.paste_after_selection(&ids(&inserted), &clipboard);
+        assert_eq!(pasted.len(), 2);
+        assert_eq!(timeline.frames().len(), 6);
+        assert_eq!(timeline.frames()[3].source_path, PathBuf::from("a.png"));
+    }
+
+    #[test]
+    fn moving_and_duration_work_on_selection() {
+        let mut timeline = Timeline::new();
+        let imported = timeline.import_paths([
+            PathBuf::from("a.png"),
+            PathBuf::from("b.png"),
+            PathBuf::from("c.png"),
+        ]);
+        let selection = ids(&[imported[2]]);
+        timeline.move_selection_up(&selection);
+        assert_eq!(timeline.frames()[1].source_path, PathBuf::from("c.png"));
+        timeline.apply_duration(&selection, 250);
+        assert_eq!(timeline.frames()[1].duration_ms, 250);
+        timeline.move_selection_down(&selection);
+        assert_eq!(timeline.frames()[2].source_path, PathBuf::from("c.png"));
+    }
+
+    #[test]
+    fn reverse_loop_can_skip_endpoints() {
+        let mut timeline = Timeline::new();
+        let imported = timeline.import_paths([
+            PathBuf::from("a.png"),
+            PathBuf::from("b.png"),
+            PathBuf::from("c.png"),
+        ]);
+        let inserted = timeline.append_reverse_loop(&ids(&imported), false);
+        let names: Vec<_> = inserted
+            .iter()
+            .map(|id| {
+                timeline
+                    .frames()
+                    .iter()
+                    .find(|frame| &frame.id == id)
+                    .unwrap()
+                    .file_name()
+            })
+            .collect();
+        assert_eq!(names, vec!["b.png".to_string()]);
+    }
+}

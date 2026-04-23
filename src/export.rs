@@ -1,0 +1,242 @@
+use std::fmt::Write as _;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use anyhow::{Context, anyhow, bail};
+use tempfile::TempDir;
+
+use crate::thumbnail::render_frame_to_path;
+use crate::types::{ExportJob, ExportProfile, FrameItem, ResizeTarget};
+
+pub fn build_effective_command(
+    manifest_path: &Path,
+    output_path: &Path,
+    profile: &ExportProfile,
+) -> anyhow::Result<Vec<String>> {
+    let mut args = vec![
+        if profile.overwrite {
+            "-y".to_string()
+        } else {
+            "-n".to_string()
+        },
+        "-f".to_string(),
+        "concat".to_string(),
+        "-safe".to_string(),
+        "0".to_string(),
+        "-i".to_string(),
+        manifest_path.display().to_string(),
+        "-c:v".to_string(),
+        "libwebp_anim".to_string(),
+        "-quality".to_string(),
+        format!("{:.2}", profile.quality),
+        "-preset".to_string(),
+        profile.encoder_preset.ffmpeg_value().to_string(),
+        "-loop".to_string(),
+        profile.loop_count.to_string(),
+        "-cr_threshold".to_string(),
+        profile.cr_threshold.to_string(),
+        "-cr_size".to_string(),
+        profile.cr_size.to_string(),
+    ];
+
+    if profile.lossless {
+        args.push("-lossless".to_string());
+        args.push("1".to_string());
+    }
+
+    if !profile.raw_args.trim().is_empty() {
+        let raw = shlex::split(&profile.raw_args).ok_or_else(|| anyhow!("invalid raw ffmpeg arguments"))?;
+        args.extend(raw);
+    }
+
+    args.push(output_path.display().to_string());
+    Ok(args)
+}
+
+pub fn build_command_preview(manifest_path: &Path, output_path: &Path, profile: &ExportProfile) -> String {
+    match build_effective_command(manifest_path, output_path, profile) {
+        Ok(args) => format!("ffmpeg {}", shell_join(&args)),
+        Err(err) => format!("Invalid advanced args: {err}"),
+    }
+}
+
+pub fn export_animation(
+    frames: &[FrameItem],
+    profile: &ExportProfile,
+    output_path: &Path,
+) -> anyhow::Result<ExportJob> {
+    let enabled_frames: Vec<_> = frames.iter().filter(|frame| frame.enabled).cloned().collect();
+    if enabled_frames.is_empty() {
+        bail!("no enabled frames to export");
+    }
+
+    let temp_dir = TempDir::new().context("create export temp dir")?;
+    let rendered_dir = temp_dir.path().join("frames");
+    fs::create_dir_all(&rendered_dir).context("create rendered frame dir")?;
+
+    let resize_target = match (profile.output_width, profile.output_height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => Some(ResizeTarget { width, height }),
+        _ => None,
+    };
+
+    let mut manifest_entries = Vec::new();
+    for (index, frame) in enabled_frames.iter().enumerate() {
+        let frame_path = rendered_dir.join(format!("{index:05}.png"));
+        render_frame_to_path(frame, resize_target, profile.fit_mode, &frame_path)?;
+        manifest_entries.push((frame_path, frame.duration_ms));
+    }
+
+    let manifest_path = temp_dir.path().join("frames.ffconcat");
+    write_concat_manifest(&manifest_path, &manifest_entries)?;
+    let args = build_effective_command(&manifest_path, output_path, profile)?;
+    let effective_command = format!("ffmpeg {}", shell_join(&args));
+
+    let output = Command::new("ffmpeg")
+        .args(&args)
+        .output()
+        .context("spawn ffmpeg")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("ffmpeg failed: {}", stderr.trim());
+    }
+
+    Ok(ExportJob {
+        temp_dir: temp_dir.keep(),
+        manifest_path,
+        output_path: output_path.to_path_buf(),
+        effective_command,
+        status: "Export finished".to_string(),
+    })
+}
+
+pub fn write_concat_manifest(path: &Path, entries: &[(PathBuf, u32)]) -> anyhow::Result<()> {
+    if entries.is_empty() {
+        bail!("cannot write an empty concat manifest");
+    }
+
+    let mut manifest = String::from("ffconcat version 1.0\n");
+    for (path_entry, duration_ms) in entries {
+        writeln!(
+            &mut manifest,
+            "file '{}'",
+            escape_manifest_path(path_entry)
+        )
+        .unwrap();
+        writeln!(&mut manifest, "duration {:.3}", *duration_ms as f32 / 1000.0).unwrap();
+    }
+    writeln!(
+        &mut manifest,
+        "file '{}'",
+        escape_manifest_path(&entries.last().unwrap().0)
+    )
+    .unwrap();
+    fs::write(path, manifest).with_context(|| format!("write concat manifest {}", path.display()))?;
+    Ok(())
+}
+
+fn escape_manifest_path(path: &Path) -> String {
+    path.display().to_string().replace('\'', "'\\''")
+}
+
+fn shell_join(args: &[String]) -> String {
+    args.iter()
+        .map(|arg| {
+            if arg.chars().all(|ch| ch.is_ascii_alphanumeric() || "-_./=:".contains(ch)) {
+                arg.clone()
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use image::{Rgba, RgbaImage};
+    use tempfile::tempdir;
+
+    use crate::types::{EncoderPreset, ExportPreset, FitMode};
+
+    use super::{build_effective_command, export_animation, write_concat_manifest};
+
+    fn tiny_png(path: &Path, color: [u8; 4]) {
+        let image = RgbaImage::from_pixel(4, 4, Rgba(color));
+        image.save(path).unwrap();
+    }
+
+    use crate::types::{ExportProfile, FrameItem, TransformSpec};
+    use std::path::Path;
+
+    #[test]
+    fn manifest_contains_last_file_twice() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("frames.ffconcat");
+        write_concat_manifest(
+            &path,
+            &[(dir.path().join("a.png"), 100), (dir.path().join("b.png"), 250)],
+        )
+        .unwrap();
+        let text = fs::read_to_string(path).unwrap();
+        assert_eq!(text.matches("file '").count(), 3);
+        assert!(text.contains("duration 0.250"));
+    }
+
+    #[test]
+    fn command_builder_includes_raw_args() {
+        let profile = ExportProfile {
+            preset: ExportPreset::Balanced,
+            output_width: Some(320),
+            output_height: Some(240),
+            fit_mode: FitMode::Contain,
+            quality: 80.0,
+            lossless: false,
+            encoder_preset: EncoderPreset::Photo,
+            cr_threshold: 0,
+            cr_size: 16,
+            loop_count: 0,
+            overwrite: true,
+            raw_args: "-metadata title=test".to_string(),
+        };
+
+        let args = build_effective_command(Path::new("frames.ffconcat"), Path::new("out.webp"), &profile).unwrap();
+        assert!(args.contains(&"libwebp_anim".to_string()));
+        assert!(args.contains(&"title=test".to_string()));
+    }
+
+    #[test]
+    fn export_generates_webp() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("one.png");
+        let second = dir.path().join("two.png");
+        tiny_png(&first, [255, 0, 0, 255]);
+        tiny_png(&second, [0, 255, 0, 255]);
+
+        let frames = vec![
+            FrameItem {
+                id: 1,
+                source_path: first,
+                duration_ms: 120,
+                transform_spec: TransformSpec::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: Some((4, 4)),
+            },
+            FrameItem {
+                id: 2,
+                source_path: second,
+                duration_ms: 240,
+                transform_spec: TransformSpec::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: Some((4, 4)),
+            },
+        ];
+        let output = dir.path().join("animation.webp");
+        let job = export_animation(&frames, &ExportProfile::default(), &output).unwrap();
+        assert!(job.output_path.exists());
+    }
+}
