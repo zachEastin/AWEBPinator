@@ -132,6 +132,27 @@ impl Timeline {
         }
     }
 
+    pub fn move_frame_to_index(&mut self, frame_id: u64, target_index: usize) -> bool {
+        let Some(current_index) = self.frames.iter().position(|frame| frame.id == frame_id) else {
+            return false;
+        };
+        if self.frames.is_empty() {
+            return false;
+        }
+        let clamped_target = target_index.min(self.frames.len());
+        if current_index == clamped_target || current_index + 1 == clamped_target {
+            return false;
+        }
+        let frame = self.frames.remove(current_index);
+        let adjusted_target = if current_index < clamped_target {
+            clamped_target.saturating_sub(1)
+        } else {
+            clamped_target
+        };
+        self.frames.insert(adjusted_target.min(self.frames.len()), frame);
+        true
+    }
+
     pub fn append_duplicate_loop(&mut self, selection: &BTreeSet<u64>) -> Vec<u64> {
         let source = self.selection_or_all(selection);
         let mut inserted = Vec::new();
@@ -240,5 +261,18 @@ mod tests {
             })
             .collect();
         assert_eq!(names, vec!["b.png".to_string()]);
+    }
+
+    #[test]
+    fn move_frame_to_index_reorders_by_id() {
+        let mut timeline = Timeline::new();
+        let imported = timeline.import_paths([
+            PathBuf::from("a.png"),
+            PathBuf::from("b.png"),
+            PathBuf::from("c.png"),
+        ]);
+        assert!(timeline.move_frame_to_index(imported[0], 3));
+        let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
+        assert_eq!(names, vec!["b.png", "c.png", "a.png"]);
     }
 }

@@ -4,17 +4,15 @@ use std::path::{Path, PathBuf};
 use gtk::glib::clone;
 use gtk::prelude::*;
 use gtk::{gdk, gio};
-use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent};
-use tracing::error;
-
+use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
 use crate::export::{build_command_preview, export_animation};
 use crate::project::{load_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
-use crate::thumbnail::{ensure_cache_dir, populate_frame_metadata, refresh_thumbnail};
+use crate::thumbnail::{ensure_cache_dir, populate_frame_metadata, refresh_thumbnail, render_preview};
 use crate::timeline::Timeline;
 use crate::types::{
-    CropRect, EncoderPreset, ExportPreset, ExportProfile, FitMode, FrameItem, ProjectDocument,
-    ResizeTarget,
+    CropRect, EncoderPreset, ExportJob, ExportPreset, ExportProfile, FitMode, FrameItem,
+    ProjectDocument, ResizeTarget,
 };
 
 pub fn run() {
@@ -31,6 +29,7 @@ pub enum AppMsg {
     ApplyBatchDuration(u32),
     MoveSelectionUp,
     MoveSelectionDown,
+    DropFrameAt { dragged_id: u64, target_index: usize },
     DuplicateSelection,
     CopySelection,
     PasteClipboard,
@@ -56,7 +55,24 @@ pub enum AppMsg {
     OpenProject(PathBuf),
     ChooseOutputPath(PathBuf),
     ExportNow,
-    SetStatus(String),
+}
+
+#[derive(Debug, Clone)]
+pub enum CommandMsg {
+    ThumbnailReady {
+        frame_id: u64,
+        thumbnail_path: Option<PathBuf>,
+        dimensions: Option<(u32, u32)>,
+        error: Option<String>,
+    },
+    PreviewReady {
+        frame_id: u64,
+        preview_path: Option<PathBuf>,
+        error: Option<String>,
+    },
+    ExportFinished {
+        result: Result<ExportJob, String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +94,10 @@ pub struct AppModel {
     cache_dir: PathBuf,
     last_output_path: Option<PathBuf>,
     command_preview: String,
+    preview_path: Option<PathBuf>,
+    preview_frame_id: Option<u64>,
+    thumbnails_pending: usize,
+    export_in_progress: bool,
 }
 
 pub struct AppWidgets {
@@ -85,6 +105,8 @@ pub struct AppWidgets {
     diagnostics_label: gtk::Label,
     selection_label: gtk::Label,
     status_label: gtk::Label,
+    preview_picture: gtk::Picture,
+    preview_meta: gtk::Label,
     output_entry: gtk::Entry,
     preset_combo: gtk::ComboBoxText,
     quality_spin: gtk::SpinButton,
@@ -99,27 +121,41 @@ pub struct AppWidgets {
     fit_mode_combo: gtk::ComboBoxText,
     raw_args_entry: gtk::Entry,
     command_preview_label: gtk::Label,
+    flip_h_check: gtk::CheckButton,
+    flip_v_check: gtk::CheckButton,
+    crop_x: gtk::SpinButton,
+    crop_y: gtk::SpinButton,
+    crop_w: gtk::SpinButton,
+    crop_h: gtk::SpinButton,
+    resize_w: gtk::SpinButton,
+    resize_h: gtk::SpinButton,
+    inspector_fit_combo: gtk::ComboBoxText,
 }
 
-impl SimpleComponent for AppModel {
+impl Component for AppModel {
     type Init = ();
     type Input = AppMsg;
     type Output = ();
-    type Widgets = AppWidgets;
+    type CommandOutput = CommandMsg;
     type Root = gtk::Window;
+    type Widgets = AppWidgets;
 
     fn init_root() -> Self::Root {
         gtk::Window::builder()
             .title("AWEBPinator")
-            .default_width(1440)
-            .default_height(920)
+            .default_width(1480)
+            .default_height(960)
             .build()
     }
 
-    fn init(_init: Self::Init, window: Self::Root, sender: ComponentSender<Self>) -> ComponentParts<Self> {
+    fn init(
+        _init: Self::Init,
+        window: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
         let cache_dir = ensure_cache_dir().unwrap_or_else(|_| std::env::temp_dir());
         let diagnostics = collect_diagnostics();
-        let model = AppModel {
+        let mut model = AppModel {
             timeline: Timeline::new(),
             selection: BTreeSet::new(),
             clipboard: Vec::new(),
@@ -129,7 +165,12 @@ impl SimpleComponent for AppModel {
             cache_dir,
             last_output_path: None,
             command_preview: String::new(),
+            preview_path: None,
+            preview_frame_id: None,
+            thumbnails_pending: 0,
+            export_in_progress: false,
         };
+        model.recompute_command_preview();
 
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -205,6 +246,12 @@ impl SimpleComponent for AppModel {
             .build();
         left_box.append(&frame_scroll);
 
+        let timeline_hint = gtk::Label::new(Some(
+            "Drag row handles to reorder frames. Drop image files here to import.",
+        ));
+        timeline_hint.set_xalign(0.0);
+        left_box.append(&timeline_hint);
+
         let batch_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -222,7 +269,7 @@ impl SimpleComponent for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
             .margin_start(8)
-            .width_request(430)
+            .width_request(450)
             .build();
         paned.set_end_child(Some(&right_box));
 
@@ -231,6 +278,21 @@ impl SimpleComponent for AppModel {
         diagnostics_label.set_selectable(true);
         diagnostics_label.set_wrap(true);
         right_box.append(&section("Diagnostics", &diagnostics_label));
+
+        let preview_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        let preview_picture = gtk::Picture::new();
+        preview_picture.set_size_request(400, 320);
+        preview_picture.set_can_shrink(true);
+        preview_picture.set_hexpand(true);
+        let preview_meta = gtk::Label::new(Some("Select a frame to inspect it."));
+        preview_meta.set_xalign(0.0);
+        preview_meta.set_wrap(true);
+        preview_box.append(&preview_picture);
+        preview_box.append(&preview_meta);
+        right_box.append(&section("Selected Frame Preview", &preview_box));
 
         let transform_grid = gtk::Grid::builder()
             .column_spacing(8)
@@ -329,36 +391,28 @@ impl SimpleComponent for AppModel {
             sender,
             #[strong]
             window,
-            move |_| {
-                open_image_dialog(&window, sender.clone());
-            }
+            move |_| open_image_dialog(&window, sender.clone())
         ));
         open_project_button.connect_clicked(clone!(
             #[strong]
             sender,
             #[strong]
             window,
-            move |_| {
-                open_project_dialog(&window, sender.clone());
-            }
+            move |_| open_project_dialog(&window, sender.clone())
         ));
         save_project_button.connect_clicked(clone!(
             #[strong]
             sender,
             #[strong]
             window,
-            move |_| {
-                save_project_dialog(&window, sender.clone());
-            }
+            move |_| save_project_dialog(&window, sender.clone())
         ));
         browse_output_button.connect_clicked(clone!(
             #[strong]
             sender,
             #[strong]
             window,
-            move |_| {
-                choose_export_dialog(&window, sender.clone());
-            }
+            move |_| choose_export_dialog(&window, sender.clone())
         ));
 
         duplicate_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::DuplicateSelection)));
@@ -401,25 +455,11 @@ impl SimpleComponent for AppModel {
             #[strong]
             inspector_fit_combo,
             move |_| {
-                let crop = match (crop_w.value() as u32, crop_h.value() as u32) {
-                    (0, 0) => None,
-                    (width, height) => Some(CropRect {
-                        x: crop_x.value() as u32,
-                        y: crop_y.value() as u32,
-                        width,
-                        height,
-                    }),
-                };
-                let resize = match (resize_w.value() as u32, resize_h.value() as u32) {
-                    (0, 0) => None,
-                    (width, height) if width > 0 && height > 0 => Some(ResizeTarget { width, height }),
-                    _ => None,
-                };
                 sender.input(AppMsg::ApplyInspectorTransform(InspectorValues {
                     flip_horizontal: flip_h_check.is_active(),
                     flip_vertical: flip_v_check.is_active(),
-                    crop,
-                    resize,
+                    crop: crop_from_widgets(&crop_x, &crop_y, &crop_w, &crop_h),
+                    resize: resize_from_widgets(&resize_w, &resize_h),
                     fit_mode: fit_mode_from_combo(&inspector_fit_combo),
                 }));
             }
@@ -444,14 +484,14 @@ impl SimpleComponent for AppModel {
             #[strong]
             flip_v_check,
             move |_| {
-                crop_x.set_value(0.0);
-                crop_y.set_value(0.0);
-                crop_w.set_value(0.0);
-                crop_h.set_value(0.0);
-                resize_w.set_value(0.0);
-                resize_h.set_value(0.0);
-                flip_h_check.set_active(false);
-                flip_v_check.set_active(false);
+                set_spin_if_needed(&crop_x, 0.0);
+                set_spin_if_needed(&crop_y, 0.0);
+                set_spin_if_needed(&crop_w, 0.0);
+                set_spin_if_needed(&crop_h, 0.0);
+                set_spin_if_needed(&resize_w, 0.0);
+                set_spin_if_needed(&resize_h, 0.0);
+                set_check_if_needed(&flip_h_check, false);
+                set_check_if_needed(&flip_v_check, false);
                 sender.input(AppMsg::ApplyInspectorTransform(InspectorValues {
                     flip_horizontal: false,
                     flip_vertical: false,
@@ -529,8 +569,8 @@ impl SimpleComponent for AppModel {
         ));
         export_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::ExportNow)));
 
-        let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::COPY);
-        drop_target.connect_drop(clone!(
+        let import_drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::COPY);
+        import_drop_target.connect_drop(clone!(
             #[strong]
             sender,
             move |_, value, _, _| {
@@ -544,13 +584,15 @@ impl SimpleComponent for AppModel {
                 false
             }
         ));
-        frame_list.add_controller(drop_target);
+        frame_list.add_controller(import_drop_target);
 
         let widgets = AppWidgets {
             frame_list,
             diagnostics_label,
             selection_label,
             status_label,
+            preview_picture,
+            preview_meta,
             output_entry,
             preset_combo,
             quality_spin,
@@ -565,21 +607,32 @@ impl SimpleComponent for AppModel {
             fit_mode_combo,
             raw_args_entry,
             command_preview_label,
+            flip_h_check,
+            flip_v_check,
+            crop_x,
+            crop_y,
+            crop_w,
+            crop_h,
+            resize_w,
+            resize_h,
+            inspector_fit_combo,
         };
 
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
         match msg {
             AppMsg::ImportPaths(paths) => {
                 let valid = filter_image_paths(paths);
                 if valid.is_empty() {
                     self.status = "No supported image files were provided.".to_string();
                 } else {
-                    self.timeline.import_paths(valid);
-                    self.refresh_all_thumbnails();
-                    self.status = format!("Imported {} frame(s).", self.timeline.frames().len());
+                    let imported_ids = self.timeline.import_paths(valid);
+                    self.selection = imported_ids.iter().copied().collect();
+                    self.status = format!("Imported {} frame(s). Generating thumbnails...", imported_ids.len());
+                    self.refresh_frame_jobs(imported_ids, &sender);
+                    self.queue_preview_for_primary_selection(&sender);
                 }
             }
             AppMsg::ToggleSelected(id, selected) => {
@@ -588,6 +641,7 @@ impl SimpleComponent for AppModel {
                 } else {
                     self.selection.remove(&id);
                 }
+                self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::ToggleEnabled(id, enabled) => {
                 if let Some(frame) = self.frame_mut(id) {
@@ -605,10 +659,20 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::MoveSelectionUp => self.timeline.move_selection_up(&self.selection),
             AppMsg::MoveSelectionDown => self.timeline.move_selection_down(&self.selection),
+            AppMsg::DropFrameAt {
+                dragged_id,
+                target_index,
+            } => {
+                if self.timeline.move_frame_to_index(dragged_id, target_index) {
+                    self.status = "Reordered frame.".to_string();
+                }
+            }
             AppMsg::DuplicateSelection => {
                 let inserted = self.timeline.duplicate_selected(&self.selection);
-                self.selection = inserted.into_iter().collect();
-                self.refresh_all_thumbnails();
+                self.selection = inserted.iter().copied().collect();
+                self.status = format!("Duplicated {} frame(s).", inserted.len());
+                self.refresh_frame_jobs(inserted, &sender);
+                self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::CopySelection => {
                 self.clipboard = self
@@ -624,30 +688,39 @@ impl SimpleComponent for AppModel {
                 let inserted = self
                     .timeline
                     .paste_after_selection(&self.selection, &self.clipboard);
-                self.selection = inserted.into_iter().collect();
-                self.refresh_all_thumbnails();
+                self.selection = inserted.iter().copied().collect();
+                self.status = format!("Pasted {} frame(s).", inserted.len());
+                self.refresh_frame_jobs(inserted, &sender);
+                self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::RemoveSelection => {
                 let removed = self.selection.len();
                 self.timeline.remove_selected(&self.selection);
                 self.selection.clear();
+                self.preview_path = None;
+                self.preview_frame_id = None;
                 self.status = format!("Removed {removed} frame(s).");
             }
             AppMsg::AppendDuplicateLoop => {
                 let inserted = self.timeline.append_duplicate_loop(&self.selection);
-                self.selection = inserted.into_iter().collect();
-                self.refresh_all_thumbnails();
+                self.selection = inserted.iter().copied().collect();
+                self.status = format!("Appended duplicate loop with {} frame(s).", inserted.len());
+                self.refresh_frame_jobs(inserted, &sender);
+                self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::AppendReverseLoop(repeat_edges) => {
                 let inserted = self.timeline.append_reverse_loop(&self.selection, repeat_edges);
-                self.selection = inserted.into_iter().collect();
-                self.refresh_all_thumbnails();
+                self.selection = inserted.iter().copied().collect();
+                self.status = format!("Appended reverse loop with {} frame(s).", inserted.len());
+                self.refresh_frame_jobs(inserted, &sender);
+                self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::RotateSelection(delta) => {
                 self.apply_to_selection(|frame| {
                     frame.transform_spec.rotate_quarter_turns += delta;
                 });
-                self.refresh_selection_thumbnails();
+                self.status = "Updated rotation for selected frames.".to_string();
+                self.refresh_selection_jobs(&sender);
             }
             AppMsg::ApplyInspectorTransform(values) => {
                 self.apply_to_selection(|frame| {
@@ -657,17 +730,18 @@ impl SimpleComponent for AppModel {
                     frame.transform_spec.resize = values.resize;
                     frame.transform_spec.fit_mode = values.fit_mode;
                 });
-                self.refresh_selection_thumbnails();
+                self.status = "Applied edit values to selected frames.".to_string();
+                self.refresh_selection_jobs(&sender);
             }
             AppMsg::SetExportPreset(preset) => self.export_profile.apply_preset(preset),
             AppMsg::SetOutputPath(path) => {
                 self.last_output_path = (!path.trim().is_empty()).then_some(PathBuf::from(path.trim()));
             }
             AppMsg::SetOutputWidth(width) => {
-                self.export_profile.output_width = if width == 0 { None } else { Some(width) }
+                self.export_profile.output_width = if width == 0 { None } else { Some(width) };
             }
             AppMsg::SetOutputHeight(height) => {
-                self.export_profile.output_height = if height == 0 { None } else { Some(height) }
+                self.export_profile.output_height = if height == 0 { None } else { Some(height) };
             }
             AppMsg::SetQuality(quality) => self.export_profile.quality = quality.clamp(0.0, 100.0),
             AppMsg::SetLossless(lossless) => self.export_profile.lossless = lossless,
@@ -691,12 +765,17 @@ impl SimpleComponent for AppModel {
             }
             AppMsg::OpenProject(path) => match load_project(&path) {
                 Ok(document) => {
+                    let ids: Vec<_> = document.frames.iter().map(|frame| frame.id).collect();
                     self.timeline = Timeline::from_frames(document.frames);
-                    self.selection.clear();
+                    self.selection = ids.into_iter().collect();
                     self.export_profile = document.export_profile;
                     self.last_output_path = document.last_output_path;
-                    self.refresh_all_thumbnails();
-                    self.status = format!("Loaded project {}", path.display());
+                    self.preview_path = None;
+                    self.preview_frame_id = None;
+                    self.status = format!("Loaded project {}. Refreshing thumbnails...", path.display());
+                    let frame_ids = self.timeline.frames().iter().map(|frame| frame.id).collect();
+                    self.refresh_frame_jobs(frame_ids, &sender);
+                    self.queue_preview_for_primary_selection(&sender);
                 }
                 Err(err) => self.status = format!("Failed to load project: {err}"),
             },
@@ -709,13 +788,74 @@ impl SimpleComponent for AppModel {
                     self.recompute_command_preview();
                     return;
                 };
+                if self.export_in_progress {
+                    self.status = "Export already running.".to_string();
+                    self.recompute_command_preview();
+                    return;
+                }
+                self.export_in_progress = true;
+                self.status = format!("Exporting to {} ...", output_path.display());
+                let frames = self.timeline.frames().to_vec();
+                let profile = self.export_profile.clone();
+                sender.spawn_oneshot_command(move || CommandMsg::ExportFinished {
+                    result: export_animation(&frames, &profile, &output_path).map_err(|err| err.to_string()),
+                });
+            }
+        }
 
-                match export_animation(self.timeline.frames(), &self.export_profile, &output_path) {
+        self.recompute_command_preview();
+    }
+
+    fn update_cmd(
+        &mut self,
+        msg: Self::CommandOutput,
+        sender: ComponentSender<Self>,
+        _root: &Self::Root,
+    ) {
+        match msg {
+            CommandMsg::ThumbnailReady {
+                frame_id,
+                thumbnail_path,
+                dimensions,
+                error,
+            } => {
+                if self.thumbnails_pending > 0 {
+                    self.thumbnails_pending -= 1;
+                }
+                if let Some(frame) = self.frame_mut(frame_id) {
+                    if let Some(path) = thumbnail_path {
+                        frame.thumbnail_path = Some(path);
+                    }
+                    if let Some(dimensions) = dimensions {
+                        frame.source_dimensions = Some(dimensions);
+                    }
+                }
+                if let Some(error) = error {
+                    self.status = format!("Thumbnail failed for frame {frame_id}: {error}");
+                } else if self.thumbnails_pending == 0 {
+                    self.status = "Timeline thumbnails ready.".to_string();
+                }
+            }
+            CommandMsg::PreviewReady {
+                frame_id,
+                preview_path,
+                error,
+            } => {
+                if Some(frame_id) == self.primary_selected_id() {
+                    self.preview_frame_id = Some(frame_id);
+                    self.preview_path = preview_path;
+                }
+                if let Some(error) = error {
+                    self.status = format!("Preview failed for frame {frame_id}: {error}");
+                }
+            }
+            CommandMsg::ExportFinished { result } => {
+                self.export_in_progress = false;
+                match result {
                     Ok(job) => self.status = format!("Exported {}", job.output_path.display()),
                     Err(err) => self.status = format!("Export failed: {err}"),
                 }
             }
-            AppMsg::SetStatus(status) => self.status = status,
         }
 
         self.recompute_command_preview();
@@ -724,13 +864,27 @@ impl SimpleComponent for AppModel {
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         widgets.diagnostics_label.set_label(&self.diagnostics.summary());
-        widgets.selection_label.set_label(&format!(
+        let mut selection_summary = format!(
             "{} selected / {} total",
             self.selection.len(),
             self.timeline.frames().len()
-        ));
+        );
+        if self.thumbnails_pending > 0 {
+            selection_summary.push_str(&format!(" | {} thumbnail job(s) running", self.thumbnails_pending));
+        }
+        if self.export_in_progress {
+            selection_summary.push_str(" | export running");
+        }
+        widgets.selection_label.set_label(&selection_summary);
         widgets.status_label.set_label(&self.status);
         widgets.command_preview_label.set_label(&self.command_preview);
+
+        if let Some(path) = self.preview_path.as_ref() {
+            widgets.preview_picture.set_file(Some(&gio::File::for_path(path)));
+        } else {
+            widgets.preview_picture.set_file(None::<&gio::File>);
+        }
+        widgets.preview_meta.set_label(&self.preview_meta_text());
 
         let output_text = self
             .last_output_path
@@ -743,59 +897,110 @@ impl SimpleComponent for AppModel {
         sync_combo_active_export_preset(&widgets.preset_combo, self.export_profile.preset);
         sync_combo_active_encoder_preset(&widgets.encoder_combo, self.export_profile.encoder_preset);
         sync_combo_active_fit_mode(&widgets.fit_mode_combo, self.export_profile.fit_mode);
-        widgets.quality_spin.set_value(self.export_profile.quality as f64);
-        widgets
-            .width_spin
-            .set_value(self.export_profile.output_width.unwrap_or_default() as f64);
-        widgets
-            .height_spin
-            .set_value(self.export_profile.output_height.unwrap_or_default() as f64);
-        widgets.lossless_check.set_active(self.export_profile.lossless);
-        widgets
-            .cr_threshold_spin
-            .set_value(self.export_profile.cr_threshold as f64);
-        widgets.cr_size_spin.set_value(self.export_profile.cr_size as f64);
-        widgets.loop_spin.set_value(self.export_profile.loop_count as f64);
-        widgets.overwrite_check.set_active(self.export_profile.overwrite);
+        set_spin_if_needed(&widgets.quality_spin, self.export_profile.quality as f64);
+        set_spin_if_needed(
+            &widgets.width_spin,
+            self.export_profile.output_width.unwrap_or_default() as f64,
+        );
+        set_spin_if_needed(
+            &widgets.height_spin,
+            self.export_profile.output_height.unwrap_or_default() as f64,
+        );
+        set_check_if_needed(&widgets.lossless_check, self.export_profile.lossless);
+        set_spin_if_needed(&widgets.cr_threshold_spin, self.export_profile.cr_threshold as f64);
+        set_spin_if_needed(&widgets.cr_size_spin, self.export_profile.cr_size as f64);
+        set_spin_if_needed(&widgets.loop_spin, self.export_profile.loop_count as f64);
+        set_check_if_needed(&widgets.overwrite_check, self.export_profile.overwrite);
         if widgets.raw_args_entry.text().as_str() != self.export_profile.raw_args {
             widgets.raw_args_entry.set_text(&self.export_profile.raw_args);
         }
+
+        self.sync_inspector_widgets(widgets);
 
         while let Some(child) = widgets.frame_list.first_child() {
             widgets.frame_list.remove(&child);
         }
 
         for (index, frame) in self.timeline.frames().iter().enumerate() {
-            widgets
-                .frame_list
-                .append(&build_frame_row(frame, index, self.selection.contains(&frame.id), sender.clone()));
+            widgets.frame_list.append(&build_frame_row(
+                frame,
+                index,
+                self.selection.contains(&frame.id),
+                sender.clone(),
+            ));
         }
     }
 }
 
 impl AppModel {
     fn frame_mut(&mut self, id: u64) -> Option<&mut FrameItem> {
-        self.timeline.frames_mut().iter_mut().find(|frame| frame.id == id)
+        self.timeline
+            .frames_mut()
+            .iter_mut()
+            .find(|frame| frame.id == id)
     }
 
-    fn refresh_all_thumbnails(&mut self) {
-        for frame in self.timeline.frames_mut() {
-            populate_frame_metadata(frame);
-            if let Err(err) = refresh_thumbnail(frame, &self.cache_dir) {
-                error!("thumbnail refresh failed for {}: {err}", frame.source_path.display());
-            }
+    fn primary_selected_id(&self) -> Option<u64> {
+        self.timeline
+            .frames()
+            .iter()
+            .find(|frame| self.selection.contains(&frame.id))
+            .map(|frame| frame.id)
+    }
+
+    fn primary_selected_frame(&self) -> Option<&FrameItem> {
+        let id = self.primary_selected_id()?;
+        self.timeline.frames().iter().find(|frame| frame.id == id)
+    }
+
+    fn refresh_frame_jobs(&mut self, frame_ids: Vec<u64>, sender: &ComponentSender<Self>) {
+        if frame_ids.is_empty() {
+            return;
         }
-    }
-
-    fn refresh_selection_thumbnails(&mut self) {
-        for frame in self.timeline.frames_mut() {
-            if self.selection.contains(&frame.id) {
-                populate_frame_metadata(frame);
-                if let Err(err) = refresh_thumbnail(frame, &self.cache_dir) {
-                    error!("thumbnail refresh failed for {}: {err}", frame.source_path.display());
+        self.thumbnails_pending += frame_ids.len();
+        for frame_id in frame_ids {
+            let Some(frame) = self.timeline.frames().iter().find(|frame| frame.id == frame_id).cloned() else {
+                self.thumbnails_pending = self.thumbnails_pending.saturating_sub(1);
+                continue;
+            };
+            let cache_dir = self.cache_dir.clone();
+            sender.spawn_oneshot_command(move || {
+                let mut frame = frame;
+                populate_frame_metadata(&mut frame);
+                let dimensions = frame.source_dimensions;
+                let result = refresh_thumbnail(&mut frame, &cache_dir);
+                CommandMsg::ThumbnailReady {
+                    frame_id,
+                    thumbnail_path: frame.thumbnail_path.clone(),
+                    dimensions,
+                    error: result.err().map(|err| err.to_string()),
                 }
-            }
+            });
         }
+    }
+
+    fn refresh_selection_jobs(&mut self, sender: &ComponentSender<Self>) {
+        let ids: Vec<_> = self.selection.iter().copied().collect();
+        self.refresh_frame_jobs(ids, sender);
+        self.queue_preview_for_primary_selection(sender);
+    }
+
+    fn queue_preview_for_primary_selection(&mut self, sender: &ComponentSender<Self>) {
+        let Some(frame) = self.primary_selected_frame().cloned() else {
+            self.preview_frame_id = None;
+            self.preview_path = None;
+            return;
+        };
+        let frame_id = frame.id;
+        let cache_dir = self.cache_dir.clone();
+        sender.spawn_oneshot_command(move || {
+            let result = render_preview(&frame, &cache_dir);
+            CommandMsg::PreviewReady {
+                frame_id,
+                preview_path: result.as_ref().ok().cloned(),
+                error: result.err().map(|err| err.to_string()),
+            }
+        });
     }
 
     fn apply_to_selection(&mut self, mut apply: impl FnMut(&mut FrameItem)) {
@@ -817,6 +1022,81 @@ impl AppModel {
             &self.export_profile,
         );
     }
+
+    fn preview_meta_text(&self) -> String {
+        let Some(frame) = self.primary_selected_frame() else {
+            return "Select a frame to inspect it.".to_string();
+        };
+        let dims = frame
+            .source_dimensions
+            .map(|(w, h)| format!("{w}x{h}"))
+            .unwrap_or_else(|| "unknown".to_string());
+        let crop = frame
+            .transform_spec
+            .crop
+            .map(|crop| format!("crop {}x{}+{},{}", crop.width, crop.height, crop.x, crop.y))
+            .unwrap_or_else(|| "no crop".to_string());
+        let resize = frame
+            .transform_spec
+            .resize
+            .map(|resize| format!("resize {}x{}", resize.width, resize.height))
+            .unwrap_or_else(|| "no resize".to_string());
+        format!(
+            "{}\n{} | {} ms | rotate {} quarter-turns\n{} | {} | fit {} | flip h:{} v:{}",
+            frame.file_name(),
+            dims,
+            frame.duration_ms,
+            frame.transform_spec.rotate_quarter_turns.rem_euclid(4),
+            crop,
+            resize,
+            frame.transform_spec.fit_mode,
+            frame.transform_spec.flip_horizontal,
+            frame.transform_spec.flip_vertical
+        )
+    }
+
+    fn sync_inspector_widgets(&self, widgets: &mut AppWidgets) {
+        let Some(frame) = self.primary_selected_frame() else {
+            set_check_if_needed(&widgets.flip_h_check, false);
+            set_check_if_needed(&widgets.flip_v_check, false);
+            set_spin_if_needed(&widgets.crop_x, 0.0);
+            set_spin_if_needed(&widgets.crop_y, 0.0);
+            set_spin_if_needed(&widgets.crop_w, 0.0);
+            set_spin_if_needed(&widgets.crop_h, 0.0);
+            set_spin_if_needed(&widgets.resize_w, 0.0);
+            set_spin_if_needed(&widgets.resize_h, 0.0);
+            sync_combo_active_fit_mode(&widgets.inspector_fit_combo, FitMode::Contain);
+            return;
+        };
+        set_check_if_needed(
+            &widgets.flip_h_check,
+            frame.transform_spec.flip_horizontal,
+        );
+        set_check_if_needed(
+            &widgets.flip_v_check,
+            frame.transform_spec.flip_vertical,
+        );
+        let crop = frame.transform_spec.crop.unwrap_or(CropRect {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+        });
+        set_spin_if_needed(&widgets.crop_x, crop.x as f64);
+        set_spin_if_needed(&widgets.crop_y, crop.y as f64);
+        set_spin_if_needed(&widgets.crop_w, crop.width as f64);
+        set_spin_if_needed(&widgets.crop_h, crop.height as f64);
+        let resize = frame
+            .transform_spec
+            .resize
+            .unwrap_or(ResizeTarget { width: 0, height: 0 });
+        set_spin_if_needed(&widgets.resize_w, resize.width as f64);
+        set_spin_if_needed(&widgets.resize_h, resize.height as f64);
+        sync_combo_active_fit_mode(
+            &widgets.inspector_fit_combo,
+            frame.transform_spec.fit_mode,
+        );
+    }
 }
 
 fn build_frame_row(
@@ -836,6 +1116,16 @@ fn build_frame_row(
         .margin_end(6)
         .build();
     row.set_child(Some(&row_box));
+
+    let drag_handle = gtk::Button::with_label("↕");
+    let drag_source = gtk::DragSource::builder()
+        .actions(gdk::DragAction::MOVE)
+        .build();
+    drag_source.set_content(Some(&gdk::ContentProvider::for_value(
+        &frame_id.to_string().to_value(),
+    )));
+    drag_handle.add_controller(drag_source);
+    row_box.append(&drag_handle);
 
     let select = gtk::CheckButton::new();
     select.set_active(selected);
@@ -900,6 +1190,28 @@ fn build_frame_row(
     controls.append(&enabled_check);
     row_box.append(&controls);
 
+    let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+    let row_for_drop = row.clone();
+    drop_target.connect_drop(clone!(
+        #[strong]
+        sender,
+        move |_, value, _, y| {
+            let Ok(text) = value.get::<String>() else {
+                return false;
+            };
+            let Ok(dragged_id) = text.parse::<u64>() else {
+                return false;
+            };
+            let target_index = index + usize::from((y as i32) > row_for_drop.height() / 2);
+            sender.input(AppMsg::DropFrameAt {
+                dragged_id,
+                target_index,
+            });
+            true
+        }
+    ));
+    row.add_controller(drop_target);
+
     row
 }
 
@@ -959,31 +1271,40 @@ fn encoder_from_combo(combo: &gtk::ComboBoxText) -> EncoderPreset {
 }
 
 fn sync_combo_active_fit_mode(combo: &gtk::ComboBoxText, mode: FitMode) {
-    combo.set_active(Some(match mode {
+    let target = match mode {
         FitMode::Contain => 0,
         FitMode::Cover => 1,
         FitMode::Stretch => 2,
-    }));
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
 }
 
 fn sync_combo_active_export_preset(combo: &gtk::ComboBoxText, preset: ExportPreset) {
-    combo.set_active(Some(match preset {
+    let target = match preset {
         ExportPreset::FastPreview => 0,
         ExportPreset::Balanced => 1,
         ExportPreset::HighQuality => 2,
         ExportPreset::Lossless => 3,
-    }));
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
 }
 
 fn sync_combo_active_encoder_preset(combo: &gtk::ComboBoxText, preset: EncoderPreset) {
-    combo.set_active(Some(match preset {
+    let target = match preset {
         EncoderPreset::Default => 0,
         EncoderPreset::Picture => 1,
         EncoderPreset::Photo => 2,
         EncoderPreset::Drawing => 3,
         EncoderPreset::Icon => 4,
         EncoderPreset::Text => 5,
-    }));
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
 }
 
 fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
@@ -993,6 +1314,46 @@ fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
 fn attach_labeled_spin(grid: &gtk::Grid, label: &str, spin: &gtk::SpinButton, column: i32, row: i32) {
     grid.attach(&gtk::Label::new(Some(label)), column, row, 1, 1);
     grid.attach(spin, column, row + 1, 1, 1);
+}
+
+fn crop_from_widgets(
+    crop_x: &gtk::SpinButton,
+    crop_y: &gtk::SpinButton,
+    crop_w: &gtk::SpinButton,
+    crop_h: &gtk::SpinButton,
+) -> Option<CropRect> {
+    match (crop_w.value() as u32, crop_h.value() as u32) {
+        (0, 0) => None,
+        (width, height) => Some(CropRect {
+            x: crop_x.value() as u32,
+            y: crop_y.value() as u32,
+            width,
+            height,
+        }),
+    }
+}
+
+fn resize_from_widgets(
+    resize_w: &gtk::SpinButton,
+    resize_h: &gtk::SpinButton,
+) -> Option<ResizeTarget> {
+    match (resize_w.value() as u32, resize_h.value() as u32) {
+        (0, 0) => None,
+        (width, height) if width > 0 && height > 0 => Some(ResizeTarget { width, height }),
+        _ => None,
+    }
+}
+
+fn set_spin_if_needed(spin: &gtk::SpinButton, value: f64) {
+    if (spin.value() - value).abs() > f64::EPSILON {
+        spin.set_value(value);
+    }
+}
+
+fn set_check_if_needed(check: &gtk::CheckButton, value: bool) {
+    if check.is_active() != value {
+        check.set_active(value);
+    }
 }
 
 fn open_image_dialog(window: &gtk::Window, sender: ComponentSender<AppModel>) {
@@ -1085,7 +1446,14 @@ fn choose_export_dialog(window: &gtk::Window, sender: ComponentSender<AppModel>)
 fn add_image_filter(dialog: &gtk::FileChooserNative) {
     let filter = gtk::FileFilter::new();
     filter.set_name(Some("Images"));
-    for mime in ["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp", "image/tiff"] {
+    for mime in [
+        "image/png",
+        "image/jpeg",
+        "image/webp",
+        "image/gif",
+        "image/bmp",
+        "image/tiff",
+    ] {
         filter.add_mime_type(mime);
     }
     dialog.add_filter(&filter);
@@ -1097,7 +1465,12 @@ fn filter_image_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .filter(|path| {
             path.extension()
                 .and_then(|value| value.to_str())
-                .map(|value| matches!(value.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "tif" | "tiff"))
+                .map(|value| {
+                    matches!(
+                        value.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp" | "bmp" | "gif" | "tif" | "tiff"
+                    )
+                })
                 .unwrap_or(false)
         })
         .collect()

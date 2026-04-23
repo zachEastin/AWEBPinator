@@ -31,6 +31,18 @@ pub fn refresh_thumbnail(frame: &mut FrameItem, cache_dir: &Path) -> anyhow::Res
     Ok(())
 }
 
+pub fn render_preview(frame: &FrameItem, cache_dir: &Path) -> anyhow::Result<PathBuf> {
+    let image = image::open(&frame.source_path)
+        .with_context(|| format!("open frame {}", frame.source_path.display()))?;
+    let transformed = apply_transform(image, &frame.transform_spec, None);
+    let preview = transformed.thumbnail(720, 720);
+    let target_path = cache_dir.join(format!("preview-{}.png", frame.id));
+    preview
+        .save(&target_path)
+        .with_context(|| format!("save preview {}", target_path.display()))?;
+    Ok(target_path)
+}
+
 pub fn render_frame_to_path(
     frame: &FrameItem,
     export_size: Option<ResizeTarget>,
