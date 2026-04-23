@@ -8,6 +8,7 @@ use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
 use crate::export::{build_command_preview, export_animation};
 use crate::project::{load_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
+use crate::selection::{SelectionMode, apply_selection};
 use crate::thumbnail::{ensure_cache_dir, populate_frame_metadata, refresh_thumbnail, render_preview};
 use crate::timeline::Timeline;
 use crate::types::{
@@ -23,8 +24,7 @@ pub fn run() {
 #[derive(Debug)]
 pub enum AppMsg {
     ImportPaths(Vec<PathBuf>),
-    SelectFrame { id: u64, additive: bool },
-    ToggleSelected(u64, bool),
+    SelectFrame { id: u64, mode: SelectionMode },
     ToggleEnabled(u64, bool),
     SetFrameDuration(u64, u32),
     ApplyBatchDuration(u32),
@@ -88,6 +88,7 @@ pub struct InspectorValues {
 pub struct AppModel {
     timeline: Timeline,
     selection: BTreeSet<u64>,
+    selection_anchor_id: Option<u64>,
     clipboard: Vec<FrameItem>,
     export_profile: ExportProfile,
     diagnostics: Diagnostics,
@@ -161,6 +162,7 @@ impl Component for AppModel {
         let mut model = AppModel {
             timeline: Timeline::new(),
             selection: BTreeSet::new(),
+            selection_anchor_id: None,
             clipboard: Vec::new(),
             export_profile: ExportProfile::default(),
             diagnostics,
@@ -649,28 +651,23 @@ impl Component for AppModel {
                 } else {
                     let imported_ids = self.timeline.import_paths(valid);
                     self.selection = imported_ids.iter().copied().collect();
+                    self.selection_anchor_id = imported_ids.first().copied();
                     self.status = format!("Imported {} frame(s). Generating thumbnails...", imported_ids.len());
                     self.refresh_frame_jobs(imported_ids, &sender);
                     self.queue_preview_for_primary_selection(&sender);
                 }
             }
-            AppMsg::SelectFrame { id, additive } => {
-                if additive {
-                    if !self.selection.insert(id) {
-                        self.selection.remove(&id);
-                    }
-                } else {
-                    self.selection.clear();
-                    self.selection.insert(id);
-                }
-                self.queue_preview_for_primary_selection(&sender);
-            }
-            AppMsg::ToggleSelected(id, selected) => {
-                if selected {
-                    self.selection.insert(id);
-                } else {
-                    self.selection.remove(&id);
-                }
+            AppMsg::SelectFrame { id, mode } => {
+                let ordered_ids: Vec<_> = self.timeline.frames().iter().map(|frame| frame.id).collect();
+                let next = apply_selection(
+                    &ordered_ids,
+                    &self.selection,
+                    self.selection_anchor_id,
+                    id,
+                    mode,
+                );
+                self.selection = next.selection;
+                self.selection_anchor_id = next.anchor_id;
                 self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::ToggleEnabled(id, enabled) => {
@@ -700,6 +697,7 @@ impl Component for AppModel {
             AppMsg::DuplicateSelection => {
                 let inserted = self.timeline.duplicate_selected(&self.selection);
                 self.selection = inserted.iter().copied().collect();
+                self.selection_anchor_id = inserted.first().copied();
                 self.status = format!("Duplicated {} frame(s).", inserted.len());
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
@@ -719,6 +717,7 @@ impl Component for AppModel {
                     .timeline
                     .paste_after_selection(&self.selection, &self.clipboard);
                 self.selection = inserted.iter().copied().collect();
+                self.selection_anchor_id = inserted.first().copied();
                 self.status = format!("Pasted {} frame(s).", inserted.len());
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
@@ -727,6 +726,7 @@ impl Component for AppModel {
                 let removed = self.selection.len();
                 self.timeline.remove_selected(&self.selection);
                 self.selection.clear();
+                self.selection_anchor_id = None;
                 self.preview_path = None;
                 self.preview_frame_id = None;
                 self.status = format!("Removed {removed} frame(s).");
@@ -734,6 +734,7 @@ impl Component for AppModel {
             AppMsg::AppendDuplicateLoop => {
                 let inserted = self.timeline.append_duplicate_loop(&self.selection);
                 self.selection = inserted.iter().copied().collect();
+                self.selection_anchor_id = inserted.first().copied();
                 self.status = format!("Appended duplicate loop with {} frame(s).", inserted.len());
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
@@ -741,6 +742,7 @@ impl Component for AppModel {
             AppMsg::AppendReverseLoop(repeat_edges) => {
                 let inserted = self.timeline.append_reverse_loop(&self.selection, repeat_edges);
                 self.selection = inserted.iter().copied().collect();
+                self.selection_anchor_id = inserted.first().copied();
                 self.status = format!("Appended reverse loop with {} frame(s).", inserted.len());
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
@@ -798,6 +800,7 @@ impl Component for AppModel {
                     let ids: Vec<_> = document.frames.iter().map(|frame| frame.id).collect();
                     self.timeline = Timeline::from_frames(document.frames);
                     self.selection = ids.into_iter().collect();
+                    self.selection_anchor_id = self.timeline.frames().first().map(|frame| frame.id);
                     self.export_profile = document.export_profile;
                     self.last_output_path = document.last_output_path;
                     self.preview_path = None;
@@ -1163,16 +1166,23 @@ fn build_timeline_tile(
 
     let click = gtk::GestureClick::new();
     click.set_button(0);
-    click.connect_pressed(clone!(
+    click.connect_released(clone!(
         #[strong]
         sender,
         move |gesture, _, _, _| {
-            let additive = gesture
-                .current_event_state()
-                .contains(gdk::ModifierType::CONTROL_MASK);
+            let state = gesture.current_event_state();
+            let mode = match (
+                state.contains(gdk::ModifierType::SHIFT_MASK),
+                state.contains(gdk::ModifierType::CONTROL_MASK),
+            ) {
+                (true, true) => SelectionMode::CtrlShift,
+                (true, false) => SelectionMode::Shift,
+                (false, true) => SelectionMode::Ctrl,
+                (false, false) => SelectionMode::Plain,
+            };
             sender.input(AppMsg::SelectFrame {
                 id: frame_id,
-                additive,
+                mode,
             });
         }
     ));
@@ -1358,10 +1368,16 @@ fn install_app_css(window: &gtk::Window) {
         .timeline-tile {
             border-radius: 10px;
             padding: 6px;
+            border: 2px solid transparent;
             background: transparent;
         }
         .timeline-tile-selected {
-            background: alpha(@accent_bg_color, 0.85);
+            background: #0b63ce;
+            border-color: #7fb2ff;
+            color: white;
+        }
+        .timeline-tile-selected label {
+            color: white;
         }
         ",
     );
