@@ -1,10 +1,15 @@
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Context;
 use image::{DynamicImage, GenericImageView, Rgba, RgbaImage, imageops};
 
+use crate::app::PreviewRenderSize;
 use crate::types::{CropRect, FitMode, FrameItem, ResizeTarget, TransformSpec};
+
+static PREVIEW_TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub fn ensure_cache_dir() -> anyhow::Result<PathBuf> {
     let path = std::env::temp_dir().join("awebpinator-cache");
@@ -32,16 +37,64 @@ pub fn refresh_thumbnail(frame: &mut FrameItem, cache_dir: &Path) -> anyhow::Res
     Ok(())
 }
 
-pub fn render_preview(frame: &FrameItem, cache_dir: &Path) -> anyhow::Result<PathBuf> {
+pub fn preview_cache_path(
+    frame: &FrameItem,
+    cache_dir: &Path,
+    render_size: PreviewRenderSize,
+) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    frame.source_path.hash(&mut hasher);
+    frame.transform_spec.rotate_quarter_turns.hash(&mut hasher);
+    frame.transform_spec.flip_horizontal.hash(&mut hasher);
+    frame.transform_spec.flip_vertical.hash(&mut hasher);
+    frame
+        .transform_spec
+        .crop
+        .map(|crop| (crop.x, crop.y, crop.width, crop.height))
+        .hash(&mut hasher);
+    frame
+        .transform_spec
+        .resize
+        .map(|resize| (resize.width, resize.height))
+        .hash(&mut hasher);
+    frame.transform_spec.fit_mode.as_str().hash(&mut hasher);
+    render_size.width.hash(&mut hasher);
+    render_size.height.hash(&mut hasher);
+    let fingerprint = hasher.finish();
+
+    cache_dir.join(format!("preview-{}-{fingerprint:016x}.png", frame.id))
+}
+
+pub fn render_preview(
+    frame: &FrameItem,
+    cache_dir: &Path,
+    render_size: PreviewRenderSize,
+) -> anyhow::Result<PathBuf> {
+    let target_path = preview_cache_path(frame, cache_dir, render_size);
+    if target_path.is_file() {
+        return Ok(target_path);
+    }
+
     let image = image::open(&frame.source_path)
         .with_context(|| format!("open frame {}", frame.source_path.display()))?;
     let transformed = apply_transform(image, &frame.transform_spec, None);
-    let preview = transformed.thumbnail(720, 720);
-    let target_path = cache_dir.join(format!("preview-{}.png", frame.id));
+    let preview = transformed.thumbnail(render_size.width, render_size.height);
+    let temporary_path = temporary_preview_path(&target_path);
     preview
-        .save(&target_path)
-        .with_context(|| format!("save preview {}", target_path.display()))?;
+        .save(&temporary_path)
+        .with_context(|| format!("save preview {}", temporary_path.display()))?;
+    fs::rename(&temporary_path, &target_path)
+        .with_context(|| format!("publish preview {}", target_path.display()))?;
     Ok(target_path)
+}
+
+fn temporary_preview_path(target_path: &Path) -> PathBuf {
+    let file_name = target_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("preview.png");
+    let suffix = PREVIEW_TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    target_path.with_file_name(format!(".{file_name}.{suffix}.tmp"))
 }
 
 pub fn render_frame_to_path(

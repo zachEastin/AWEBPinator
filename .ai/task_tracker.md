@@ -51,6 +51,33 @@ No active tasks.
 - Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
 - Notes: The global key handler now uses capture phase so `Space` triggers playback before focused buttons can open dialogs. Preview updates now switch immediately to a cached frame image while the async full preview render catches up.
 
+### 2026-04-23 - Implement higher-res preview playback
+
+- Status: Done
+- Request: Render preview playback at least at the current UI resolution instead of the fixed low-resolution preview cap.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: Preview rendering now targets the current preview widget size multiplied by GTK scale factor, tracks stale preview jobs, and caches preview files by frame id plus render size. Interactive playback and resize quality were not manually exercised in this environment.
+
+### 2026-04-23 - Fix low-res playback preview fallback
+
+- Status: Done
+- Request: Stop playback from flashing the low-resolution thumbnail proxy while high-resolution preview renders catch up.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`, `src/types.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: Preview cache filenames now include the frame transform and target render size, playback reuses cached full previews immediately, and upcoming playback frames are prewarmed instead of falling back to the 160 px timeline thumbnail.
+
+### 2026-04-23 - Fix blank first-visit playback preview
+
+- Status: Done
+- Request: Prevent the preview area from going blank the first time a frame is visited during playback.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Files changed: `.ai/task_tracker.md`, `src/thumbnail.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: Preview cache files are now written to a temporary file and atomically renamed into place so playback never treats a partially-written prewarmed PNG as a ready cache hit.
+
 ## Parking Lot
 
 - Consider adding automated GTK smoke or interaction tests if the project later adopts a GUI testing strategy.

@@ -7,17 +7,22 @@ use crate::project::{load_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
 use crate::selection::{SelectionMode, apply_selection};
 use crate::thumbnail::{
-    ensure_cache_dir, populate_frame_metadata, refresh_thumbnail, render_preview,
+    ensure_cache_dir, populate_frame_metadata, preview_cache_path, refresh_thumbnail,
+    render_preview,
 };
 use crate::timeline::Timeline;
 use crate::types::{
     CropRect, EncoderPreset, ExportJob, ExportPreset, ExportProfile, FitMode, FrameItem,
-    ProjectDocument, ResizeTarget,
+    ProjectDocument, ResizeTarget, TransformSpec,
 };
 use gtk::glib::clone;
 use gtk::prelude::*;
 use gtk::{gdk, gio};
 use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
+
+const DEFAULT_PREVIEW_LOGICAL_WIDTH: i32 = 720;
+const DEFAULT_PREVIEW_LOGICAL_HEIGHT: i32 = 360;
+const MAX_PREVIEW_RENDER_EDGE: u32 = 4096;
 
 pub fn run() {
     let app = RelmApp::new("dev.truevfx.awebpinator");
@@ -31,6 +36,7 @@ pub enum AppMsg {
         paths: Vec<PathBuf>,
         mode: ImportMode,
     },
+    PreviewLayoutChanged(PreviewRenderSize),
     GoToBeginning,
     StepBackward,
     TogglePlayback,
@@ -89,6 +95,7 @@ pub enum CommandMsg {
     },
     PreviewReady {
         frame_id: u64,
+        render_size: PreviewRenderSize,
         preview_path: Option<PathBuf>,
         error: Option<String>,
     },
@@ -113,6 +120,18 @@ pub enum ImportMode {
     Replace,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PreviewRenderSize {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+
+impl PreviewRenderSize {
+    fn covers(self, other: Self) -> bool {
+        self.width >= other.width && self.height >= other.height
+    }
+}
+
 pub struct AppModel {
     timeline: Timeline,
     selection: BTreeSet<u64>,
@@ -126,6 +145,8 @@ pub struct AppModel {
     command_preview: String,
     preview_path: Option<PathBuf>,
     preview_frame_id: Option<u64>,
+    preview_target_size: PreviewRenderSize,
+    preview_rendered_size: Option<PreviewRenderSize>,
     playback_active: bool,
     playback_generation: u64,
     thumbnails_pending: usize,
@@ -207,6 +228,11 @@ impl Component for AppModel {
             command_preview: String::new(),
             preview_path: None,
             preview_frame_id: None,
+            preview_target_size: PreviewRenderSize {
+                width: DEFAULT_PREVIEW_LOGICAL_WIDTH as u32,
+                height: DEFAULT_PREVIEW_LOGICAL_HEIGHT as u32,
+            },
+            preview_rendered_size: None,
             playback_active: false,
             playback_generation: 0,
             thumbnails_pending: 0,
@@ -321,6 +347,8 @@ impl Component for AppModel {
         preview_picture.set_can_shrink(true);
         preview_picture.set_hexpand(true);
         preview_picture.set_vexpand(true);
+        model.preview_target_size = preview_render_size_for_widget(&preview_picture);
+        install_preview_layout_watch(&preview_picture, sender.clone());
         let preview_meta = gtk::Label::new(Some("Select a frame to inspect it."));
         preview_meta.set_xalign(0.0);
         preview_meta.set_wrap(true);
@@ -844,6 +872,19 @@ impl Component for AppModel {
             AppMsg::ImportPathsWithMode { paths, mode } => {
                 self.import_paths(paths, mode, &sender);
             }
+            AppMsg::PreviewLayoutChanged(size) => {
+                if size != self.preview_target_size {
+                    self.preview_target_size = size;
+                    if self.primary_selected_id().is_some()
+                        && should_refresh_preview(
+                            self.preview_rendered_size,
+                            self.preview_target_size,
+                        )
+                    {
+                        self.queue_preview_for_primary_selection(&sender);
+                    }
+                }
+            }
             AppMsg::GoToBeginning => self.navigate_to_boundary(false, &sender),
             AppMsg::StepBackward => self.navigate_by_step(-1, &sender),
             AppMsg::TogglePlayback => self.toggle_playback(&sender),
@@ -1109,11 +1150,18 @@ impl Component for AppModel {
             }
             CommandMsg::PreviewReady {
                 frame_id,
+                render_size,
                 preview_path,
                 error,
             } => {
-                if Some(frame_id) == self.primary_selected_id() {
+                if preview_result_is_usable(
+                    self.primary_selected_id(),
+                    self.preview_target_size,
+                    frame_id,
+                    render_size,
+                ) {
                     self.preview_frame_id = Some(frame_id);
+                    self.preview_rendered_size = Some(render_size);
                     self.preview_path = preview_path;
                 }
                 if let Some(error) = error {
@@ -1446,20 +1494,73 @@ impl AppModel {
         let Some(frame) = self.primary_selected_frame().cloned() else {
             self.preview_frame_id = None;
             self.preview_path = None;
+            self.preview_rendered_size = None;
             return;
         };
+        let same_frame = self.preview_frame_id == Some(frame.id);
+        let render_size = self.preview_target_size;
+        let cached_preview_path = preview_cache_path(&frame, &self.cache_dir, render_size);
+        let cached_preview_path = cached_preview_path.is_file().then_some(cached_preview_path);
         self.preview_frame_id = Some(frame.id);
-        self.preview_path = Some(immediate_preview_path(&frame));
-        let frame_id = frame.id;
-        let cache_dir = self.cache_dir.clone();
-        sender.spawn_oneshot_command(move || {
-            let result = render_preview(&frame, &cache_dir);
-            CommandMsg::PreviewReady {
-                frame_id,
-                preview_path: result.as_ref().ok().cloned(),
-                error: result.err().map(|err| err.to_string()),
+
+        if let Some(cached_preview_path) = cached_preview_path {
+            self.preview_path = Some(cached_preview_path);
+            self.preview_rendered_size = Some(render_size);
+        } else {
+            let fallback_path = immediate_preview_path(
+                &frame,
+                None,
+                self.preview_path.as_ref(),
+                self.playback_active,
+            );
+            if !same_frame || self.preview_path.as_ref() != Some(&fallback_path) {
+                self.preview_path = Some(fallback_path);
             }
-        });
+            self.preview_rendered_size = None;
+
+            let frame_id = frame.id;
+            let cache_dir = self.cache_dir.clone();
+            sender.spawn_oneshot_command(move || {
+                let result = render_preview(&frame, &cache_dir, render_size);
+                CommandMsg::PreviewReady {
+                    frame_id,
+                    render_size,
+                    preview_path: result.as_ref().ok().cloned(),
+                    error: result.err().map(|err| err.to_string()),
+                }
+            });
+        }
+
+        self.prewarm_upcoming_playback_previews();
+    }
+
+    fn prewarm_upcoming_playback_previews(&self) {
+        if !self.playback_active {
+            return;
+        }
+
+        let Some(current_index) = self.current_frame_index() else {
+            return;
+        };
+
+        let render_size = self.preview_target_size;
+        for frame in self
+            .timeline
+            .frames()
+            .iter()
+            .skip(current_index + 1)
+            .take(2)
+            .cloned()
+        {
+            let cache_dir = self.cache_dir.clone();
+            if preview_cache_path(&frame, &cache_dir, render_size).is_file() {
+                continue;
+            }
+
+            std::thread::spawn(move || {
+                let _ = render_preview(&frame, &cache_dir, render_size);
+            });
+        }
     }
 
     fn apply_to_selection(&mut self, mut apply: impl FnMut(&mut FrameItem)) {
@@ -1760,8 +1861,88 @@ fn build_icon_button(icon_name: &str, tooltip: &str) -> gtk::Button {
     button
 }
 
+fn install_preview_layout_watch(preview_picture: &gtk::Picture, sender: ComponentSender<AppModel>) {
+    preview_picture.connect_map(clone!(
+        #[strong]
+        sender,
+        move |picture| sender.input(AppMsg::PreviewLayoutChanged(
+            preview_render_size_for_widget(picture)
+        ))
+    ));
+    preview_picture.connect_notify_local(
+        Some("width"),
+        clone!(
+            #[strong]
+            sender,
+            move |picture, _| sender.input(AppMsg::PreviewLayoutChanged(
+                preview_render_size_for_widget(picture)
+            ))
+        ),
+    );
+    preview_picture.connect_notify_local(
+        Some("height"),
+        clone!(
+            #[strong]
+            sender,
+            move |picture, _| sender.input(AppMsg::PreviewLayoutChanged(
+                preview_render_size_for_widget(picture)
+            ))
+        ),
+    );
+    preview_picture.connect_notify_local(
+        Some("scale-factor"),
+        clone!(
+            #[strong]
+            sender,
+            move |picture, _| sender.input(AppMsg::PreviewLayoutChanged(
+                preview_render_size_for_widget(picture)
+            ))
+        ),
+    );
+}
+
 fn set_button_icon(button: &gtk::Button, icon_name: &str) {
     button.set_child(Some(&gtk::Image::from_icon_name(icon_name)));
+}
+
+fn preview_render_size_for_widget(widget: &impl IsA<gtk::Widget>) -> PreviewRenderSize {
+    preview_render_size_from_values(
+        widget.as_ref().width(),
+        widget.as_ref().height(),
+        widget.as_ref().width_request(),
+        widget.as_ref().height_request(),
+        widget.as_ref().scale_factor(),
+    )
+}
+
+fn preview_render_size_from_values(
+    width: i32,
+    height: i32,
+    width_request: i32,
+    height_request: i32,
+    scale_factor: i32,
+) -> PreviewRenderSize {
+    let logical_width = width.max(width_request.max(0));
+    let logical_height = height.max(height_request.max(0));
+    let logical_width = if logical_width > 0 {
+        logical_width
+    } else {
+        DEFAULT_PREVIEW_LOGICAL_WIDTH
+    };
+    let logical_height = if logical_height > 0 {
+        logical_height
+    } else {
+        DEFAULT_PREVIEW_LOGICAL_HEIGHT
+    };
+    let scale_factor = scale_factor.max(1) as u32;
+    PreviewRenderSize {
+        width: (logical_width as u32)
+            .saturating_mul(scale_factor)
+            .clamp(1, MAX_PREVIEW_RENDER_EDGE),
+        height: (logical_height as u32)
+            .saturating_mul(scale_factor)
+            .clamp(1, MAX_PREVIEW_RENDER_EDGE),
+    }
 }
 
 fn install_app_css(window: &gtk::Window) {
@@ -2134,11 +2315,45 @@ fn parse_uri_list(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-fn immediate_preview_path(frame: &FrameItem) -> PathBuf {
+fn immediate_preview_path(
+    frame: &FrameItem,
+    cached_preview_path: Option<PathBuf>,
+    current_preview_path: Option<&PathBuf>,
+    playback_active: bool,
+) -> PathBuf {
+    if let Some(cached_preview_path) = cached_preview_path {
+        return cached_preview_path;
+    }
+
+    if playback_active {
+        if frame.transform_spec != TransformSpec::default() {
+            if let Some(current_preview_path) = current_preview_path {
+                return current_preview_path.clone();
+            }
+        }
+        return frame.source_path.clone();
+    }
+
     frame
         .thumbnail_path
         .clone()
         .unwrap_or_else(|| frame.source_path.clone())
+}
+
+fn should_refresh_preview(
+    rendered_size: Option<PreviewRenderSize>,
+    target_size: PreviewRenderSize,
+) -> bool {
+    rendered_size.is_none_or(|rendered_size| !rendered_size.covers(target_size))
+}
+
+fn preview_result_is_usable(
+    current_frame_id: Option<u64>,
+    target_size: PreviewRenderSize,
+    frame_id: u64,
+    render_size: PreviewRenderSize,
+) -> bool {
+    current_frame_id == Some(frame_id) && render_size.covers(target_size)
 }
 
 fn step_frame_id(frame_ids: &[u64], current: Option<u64>, offset: isize) -> Option<u64> {
@@ -2194,7 +2409,9 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        following_frame_id, immediate_preview_path, playback_start_frame_id, step_frame_id,
+        PreviewRenderSize, following_frame_id, immediate_preview_path, playback_start_frame_id,
+        preview_render_size_from_values, preview_result_is_usable, should_refresh_preview,
+        step_frame_id,
     };
     use crate::types::{FitMode, FrameItem, TransformSpec};
 
@@ -2227,7 +2444,7 @@ mod tests {
     }
 
     #[test]
-    fn immediate_preview_prefers_thumbnail_when_available() {
+    fn immediate_preview_prefers_thumbnail_when_not_playing() {
         let frame = FrameItem {
             id: 1,
             source_path: PathBuf::from("source.png"),
@@ -2245,6 +2462,172 @@ mod tests {
             source_dimensions: None,
         };
 
-        assert_eq!(immediate_preview_path(&frame), PathBuf::from("thumb.png"));
+        assert_eq!(
+            immediate_preview_path(&frame, None, None, false),
+            PathBuf::from("thumb.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_prefers_cached_render_when_available() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(&frame, Some(PathBuf::from("preview.png")), None, true),
+            PathBuf::from("preview.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_uses_source_during_playback() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(&frame, None, None, true),
+            PathBuf::from("source.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_keeps_existing_preview_for_transformed_playback_frame() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec {
+                rotate_quarter_turns: 1,
+                flip_horizontal: false,
+                flip_vertical: false,
+                crop: None,
+                resize: None,
+                fit_mode: FitMode::Contain,
+            },
+            thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(
+                &frame,
+                None,
+                Some(&PathBuf::from("existing-preview.png")),
+                true,
+            ),
+            PathBuf::from("existing-preview.png")
+        );
+    }
+
+    #[test]
+    fn preview_render_size_uses_allocated_size_and_scale_factor() {
+        let render_size = preview_render_size_from_values(800, 450, 720, 360, 2);
+
+        assert_eq!(
+            render_size,
+            PreviewRenderSize {
+                width: 1600,
+                height: 900
+            }
+        );
+    }
+
+    #[test]
+    fn preview_render_size_falls_back_to_requested_size() {
+        let render_size = preview_render_size_from_values(0, 0, 720, 360, 1);
+
+        assert_eq!(
+            render_size,
+            PreviewRenderSize {
+                width: 720,
+                height: 360
+            }
+        );
+    }
+
+    #[test]
+    fn should_refresh_preview_only_when_target_exceeds_rendered_size() {
+        assert!(should_refresh_preview(
+            None,
+            PreviewRenderSize {
+                width: 720,
+                height: 360
+            }
+        ));
+        assert!(!should_refresh_preview(
+            Some(PreviewRenderSize {
+                width: 1440,
+                height: 720
+            }),
+            PreviewRenderSize {
+                width: 720,
+                height: 360
+            },
+        ));
+        assert!(should_refresh_preview(
+            Some(PreviewRenderSize {
+                width: 720,
+                height: 360
+            }),
+            PreviewRenderSize {
+                width: 1080,
+                height: 720
+            },
+        ));
+    }
+
+    #[test]
+    fn preview_result_is_usable_only_for_current_frame_and_target() {
+        assert!(preview_result_is_usable(
+            Some(5),
+            PreviewRenderSize {
+                width: 720,
+                height: 360
+            },
+            5,
+            PreviewRenderSize {
+                width: 1440,
+                height: 720
+            },
+        ));
+        assert!(!preview_result_is_usable(
+            Some(5),
+            PreviewRenderSize {
+                width: 1080,
+                height: 720
+            },
+            5,
+            PreviewRenderSize {
+                width: 720,
+                height: 360
+            },
+        ));
+        assert!(!preview_result_is_usable(
+            Some(5),
+            PreviewRenderSize {
+                width: 720,
+                height: 360
+            },
+            6,
+            PreviewRenderSize {
+                width: 1440,
+                height: 720
+            },
+        ));
     }
 }
