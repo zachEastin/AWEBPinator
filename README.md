@@ -3,6 +3,7 @@
 AWEBPinator is a native Linux desktop app for assembling still images into animated WebP files with `ffmpeg`.
 
 The current app is written in Rust with GTK4/Relm4 and supports:
+
 - importing image frames from the file picker or drag/drop
 - timeline ordering, selection, duplicate, copy/paste, remove, and duration edits
 - basic non-destructive transforms on selected frames
@@ -101,9 +102,14 @@ Use this when validating the app locally after a change.
 This repo includes VS Code workspace settings under `.vscode/`.
 
 Useful editor workflows:
+
 - Build task: `cargo build`
 - Test task: `cargo test`
 - Debug launch: `Debug AWEBPinator`
 - Testing panel: Rust tests discovered by `rust-analyzer`
 
 See [.vscode/README.md](./.vscode/README.md) for the editor-specific notes.
+
+# Credits
+
+Used GPT-5.4 and GPT-5.5 to create this.
