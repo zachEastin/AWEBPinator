@@ -995,9 +995,6 @@ impl Component for AppModel {
                 sender.clone(),
             ));
         }
-        widgets
-            .timeline_strip
-            .append(&build_timeline_end_drop_zone(self.timeline.frames().len(), sender));
     }
 }
 
@@ -1241,6 +1238,27 @@ fn build_timeline_tile(
     tile.append(&subtitle);
 
     let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+    let tile_for_drop = tile.clone();
+    drop_target.connect_enter(clone!(
+        move |_, x, _| {
+            set_tile_drop_class(&tile_for_drop, tile_drop_side(tile_for_drop.width(), x));
+            gdk::DragAction::MOVE
+        }
+    ));
+    let tile_for_motion = tile.clone();
+    drop_target.connect_motion(clone!(
+        move |_, x, _| {
+            set_tile_drop_class(&tile_for_motion, tile_drop_side(tile_for_motion.width(), x));
+            gdk::DragAction::MOVE
+        }
+    ));
+    let tile_for_leave = tile.clone();
+    drop_target.connect_leave(clone!(
+        move |_| {
+            clear_tile_drop_class(&tile_for_leave);
+        }
+    ));
+    let tile_for_commit = tile.clone();
     drop_target.connect_drop(clone!(
         #[strong]
         sender,
@@ -1251,10 +1269,10 @@ fn build_timeline_tile(
             let Ok(dragged_id) = text.parse::<u64>() else {
                 return false;
             };
-            let target_index = index + usize::from((x as i32) > 66);
+            clear_tile_drop_class(&tile_for_commit);
             sender.input(AppMsg::DropFrameAt {
                 dragged_id,
-                target_index,
+                target_index: tile_drop_index(index, tile_for_commit.width(), x),
             });
             true
         }
@@ -1262,40 +1280,6 @@ fn build_timeline_tile(
     tile.add_controller(drop_target);
 
     tile
-}
-
-fn build_timeline_end_drop_zone(index: usize, sender: ComponentSender<AppModel>) -> gtk::Box {
-    let zone = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .width_request(48)
-        .margin_top(12)
-        .margin_bottom(12)
-        .margin_start(4)
-        .margin_end(4)
-        .build();
-    let label = gtk::Label::new(Some("Drop\nend"));
-    label.add_css_class("dim-label");
-    zone.append(&label);
-    let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
-    drop_target.connect_drop(clone!(
-        #[strong]
-        sender,
-        move |_, value, _, _| {
-            let Ok(text) = value.get::<String>() else {
-                return false;
-            };
-            let Ok(dragged_id) = text.parse::<u64>() else {
-                return false;
-            };
-            sender.input(AppMsg::DropFrameAt {
-                dragged_id,
-                target_index: index + 1,
-            });
-            true
-        }
-    ));
-    zone.add_controller(drop_target);
-    zone
 }
 
 fn combo_for_fit_mode() -> gtk::ComboBoxText {
@@ -1412,6 +1396,14 @@ fn install_app_css(window: &gtk::Window) {
         .timeline-tile-selected label {
             color: white;
         }
+        .timeline-drop-before {
+            border-left-color: #7fb2ff;
+            box-shadow: inset 4px 0 0 #0b63ce;
+        }
+        .timeline-drop-after {
+            border-right-color: #7fb2ff;
+            box-shadow: inset -4px 0 0 #0b63ce;
+        }
         ",
     );
 
@@ -1467,6 +1459,46 @@ fn set_check_if_needed(check: &gtk::CheckButton, value: bool) {
     if check.is_active() != value {
         check.set_active(value);
     }
+}
+
+#[derive(Clone, Copy)]
+enum TileDropSide {
+    Before,
+    After,
+}
+
+fn tile_drop_side(tile_width: i32, x: f64) -> TileDropSide {
+    let split = if tile_width > 0 {
+        f64::from(tile_width) / 2.0
+    } else {
+        66.0
+    };
+    if x < split {
+        TileDropSide::Before
+    } else {
+        TileDropSide::After
+    }
+}
+
+fn tile_drop_index(index: usize, tile_width: i32, x: f64) -> usize {
+    index
+        + match tile_drop_side(tile_width, x) {
+            TileDropSide::Before => 0,
+            TileDropSide::After => 1,
+        }
+}
+
+fn set_tile_drop_class(tile: &gtk::Box, side: TileDropSide) {
+    clear_tile_drop_class(tile);
+    match side {
+        TileDropSide::Before => tile.add_css_class("timeline-drop-before"),
+        TileDropSide::After => tile.add_css_class("timeline-drop-after"),
+    }
+}
+
+fn clear_tile_drop_class(tile: &gtk::Box) {
+    tile.remove_css_class("timeline-drop-before");
+    tile.remove_css_class("timeline-drop-after");
 }
 
 fn should_handle_timeline_shortcuts(window: &gtk::Window) -> bool {
