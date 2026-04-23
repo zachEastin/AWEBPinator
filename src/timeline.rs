@@ -26,6 +26,10 @@ impl Timeline {
         &self.frames
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.frames.is_empty()
+    }
+
     pub fn frames_mut(&mut self) -> &mut [FrameItem] {
         &mut self.frames
     }
@@ -38,22 +42,23 @@ impl Timeline {
     }
 
     pub fn import_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<u64> {
-        let mut imported = Vec::new();
-        for path in paths {
-            let id = self.next_id;
-            self.next_id += 1;
-            self.frames.push(FrameItem {
-                id,
-                source_path: path,
-                duration_ms: 100,
-                transform_spec: Default::default(),
-                thumbnail_path: None,
-                enabled: true,
-                source_dimensions: None,
-            });
-            imported.push(id);
-        }
-        imported
+        let imported = self.build_imported_frames(paths);
+        let imported_ids = imported.iter().map(|frame| frame.id).collect();
+        self.frames.extend(imported);
+        imported_ids
+    }
+
+    pub fn prepend_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<u64> {
+        let imported = self.build_imported_frames(paths);
+        let imported_ids = imported.iter().map(|frame| frame.id).collect();
+        self.frames.splice(0..0, imported);
+        imported_ids
+    }
+
+    pub fn replace_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<u64> {
+        self.frames.clear();
+        self.next_id = 1;
+        self.import_paths(paths)
     }
 
     pub fn selected_indices(selection: &BTreeSet<u64>, frames: &[FrameItem]) -> Vec<usize> {
@@ -189,6 +194,24 @@ impl Timeline {
             .collect();
         frames
     }
+
+    fn build_imported_frames(&mut self, paths: impl IntoIterator<Item = PathBuf>) -> Vec<FrameItem> {
+        let mut imported = Vec::new();
+        for path in paths {
+            let id = self.next_id;
+            self.next_id += 1;
+            imported.push(FrameItem {
+                id,
+                source_path: path,
+                duration_ms: 100,
+                transform_spec: Default::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: None,
+            });
+        }
+        imported
+    }
 }
 
 #[cfg(test)]
@@ -274,5 +297,29 @@ mod tests {
         assert!(timeline.move_frame_to_index(imported[0], 3));
         let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
         assert_eq!(names, vec!["b.png", "c.png", "a.png"]);
+    }
+
+    #[test]
+    fn prepend_paths_keeps_new_images_at_front_in_order() {
+        let mut timeline = Timeline::new();
+        timeline.import_paths([PathBuf::from("c.png"), PathBuf::from("d.png")]);
+
+        let imported = timeline.prepend_paths([PathBuf::from("a.png"), PathBuf::from("b.png")]);
+
+        assert_eq!(imported.len(), 2);
+        let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
+        assert_eq!(names, vec!["a.png", "b.png", "c.png", "d.png"]);
+    }
+
+    #[test]
+    fn replace_paths_resets_existing_frames() {
+        let mut timeline = Timeline::new();
+        timeline.import_paths([PathBuf::from("old.png")]);
+
+        let imported = timeline.replace_paths([PathBuf::from("new-a.png"), PathBuf::from("new-b.png")]);
+
+        assert_eq!(imported, vec![1, 2]);
+        let names: Vec<_> = timeline.frames().iter().map(|frame| frame.file_name()).collect();
+        assert_eq!(names, vec!["new-a.png", "new-b.png"]);
     }
 }

@@ -24,6 +24,15 @@ No active tasks.
 - Verification: Documentation-only change; verified by file inspection and `git status --short`.
 - Notes: Existing `src/app.rs` had uncommitted changes before this task and was not modified.
 
+### 2026-04-23 - Fix image drop import flow
+
+- Status: Done
+- Request: Make dragging image files onto the window work, and prompt for append, prepend, or replace when importing into a non-empty timeline.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `Cargo.toml`, `src/app.rs`, `src/timeline.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/timeline.rs`
+- Verification: `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: Added window-content drop targets for `gdk::FileList`, `gio::File`, and URI text drops. Interactive desktop drag-and-drop behavior was not manually exercised in this environment.
+
 ## Parking Lot
 
 - Consider adding automated GTK smoke or interaction tests if the project later adopts a GUI testing strategy.

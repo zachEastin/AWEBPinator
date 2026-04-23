@@ -24,6 +24,7 @@ pub fn run() {
 #[derive(Debug)]
 pub enum AppMsg {
     ImportPaths(Vec<PathBuf>),
+    ImportPathsWithMode { paths: Vec<PathBuf>, mode: ImportMode },
     SelectFrame { id: u64, mode: SelectionMode },
     ToggleEnabled(u64, bool),
     SetFrameDuration(u64, u32),
@@ -83,6 +84,13 @@ pub struct InspectorValues {
     pub crop: Option<CropRect>,
     pub resize: Option<ResizeTarget>,
     pub fit_mode: FitMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportMode {
+    Append,
+    Prepend,
+    Replace,
 }
 
 pub struct AppModel {
@@ -383,7 +391,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let timeline_hint = gtk::Label::new(Some(
-            "Timeline: drag thumbnails to reorder. Drop image files here to import.",
+            "Timeline: drag thumbnails to reorder. Drop image files anywhere in the window to import.",
         ));
         timeline_hint.set_xalign(0.0);
         let timeline_strip = gtk::Box::builder()
@@ -623,22 +631,7 @@ impl Component for AppModel {
         ));
         export_button.connect_clicked(clone!(#[strong] sender, move |_| sender.input(AppMsg::ExportNow)));
 
-        let import_drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::COPY);
-        import_drop_target.connect_drop(clone!(
-            #[strong]
-            sender,
-            move |_, value, _, _| {
-                if let Ok(text) = value.get::<String>() {
-                    let paths = parse_uri_list(&text);
-                    if !paths.is_empty() {
-                        sender.input(AppMsg::ImportPaths(paths));
-                        return true;
-                    }
-                }
-                false
-            }
-        ));
-        timeline_strip.add_controller(import_drop_target);
+        install_import_drop_targets(&root, sender.clone());
 
         let widgets = AppWidgets {
             timeline_strip,
@@ -675,20 +668,20 @@ impl Component for AppModel {
         ComponentParts { model, widgets }
     }
 
-    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, _root: &Self::Root) {
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>, root: &Self::Root) {
         match msg {
             AppMsg::ImportPaths(paths) => {
                 let valid = filter_image_paths(paths);
                 if valid.is_empty() {
                     self.status = "No supported image files were provided.".to_string();
+                } else if self.timeline.is_empty() {
+                    self.import_paths(valid, ImportMode::Append, &sender);
                 } else {
-                    let imported_ids = self.timeline.import_paths(valid);
-                    self.selection = imported_ids.iter().copied().collect();
-                    self.selection_anchor_id = imported_ids.first().copied();
-                    self.status = format!("Imported {} frame(s). Generating thumbnails...", imported_ids.len());
-                    self.refresh_frame_jobs(imported_ids, &sender);
-                    self.queue_preview_for_primary_selection(&sender);
+                    choose_import_mode(root, sender.clone(), valid);
                 }
+            }
+            AppMsg::ImportPathsWithMode { paths, mode } => {
+                self.import_paths(paths, mode, &sender);
             }
             AppMsg::SelectFrame { id, mode } => {
                 let ordered_ids: Vec<_> = self.timeline.frames().iter().map(|frame| frame.id).collect();
@@ -999,6 +992,24 @@ impl Component for AppModel {
 }
 
 impl AppModel {
+    fn import_paths(
+        &mut self,
+        paths: Vec<PathBuf>,
+        mode: ImportMode,
+        sender: &ComponentSender<Self>,
+    ) {
+        let imported_ids = match mode {
+            ImportMode::Append => self.timeline.import_paths(paths),
+            ImportMode::Prepend => self.timeline.prepend_paths(paths),
+            ImportMode::Replace => self.timeline.replace_paths(paths),
+        };
+        self.selection = imported_ids.iter().copied().collect();
+        self.selection_anchor_id = imported_ids.first().copied();
+        self.status = format!("Imported {} frame(s). Generating thumbnails...", imported_ids.len());
+        self.refresh_frame_jobs(imported_ids, sender);
+        self.queue_preview_for_primary_selection(sender);
+    }
+
     fn frame_mut(&mut self, id: u64) -> Option<&mut FrameItem> {
         self.timeline
             .frames_mut()
@@ -1615,6 +1626,97 @@ fn add_image_filter(dialog: &gtk::FileChooserNative) {
     dialog.add_filter(&filter);
 }
 
+fn install_import_drop_targets(widget: &impl IsA<gtk::Widget>, sender: ComponentSender<AppModel>) {
+    let file_list_target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+    file_list_target.connect_drop(clone!(
+        #[strong]
+        sender,
+        move |_, value, _, _| {
+            let Ok(files) = value.get::<gdk::FileList>() else {
+                return false;
+            };
+            let paths: Vec<_> = files.files().into_iter().filter_map(|file| file.path()).collect();
+            if paths.is_empty() {
+                return false;
+            }
+            sender.input(AppMsg::ImportPaths(paths));
+            true
+        }
+    ));
+    widget.as_ref().add_controller(file_list_target);
+
+    let file_target = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
+    file_target.connect_drop(clone!(
+        #[strong]
+        sender,
+        move |_, value, _, _| {
+            let Ok(file) = value.get::<gio::File>() else {
+                return false;
+            };
+            let Some(path) = file.path() else {
+                return false;
+            };
+            sender.input(AppMsg::ImportPaths(vec![path]));
+            true
+        }
+    ));
+    widget.as_ref().add_controller(file_target);
+
+    let text_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::COPY);
+    text_target.connect_drop(clone!(
+        #[strong]
+        sender,
+        move |_, value, _, _| {
+            let Ok(text) = value.get::<String>() else {
+                return false;
+            };
+            let paths = parse_uri_list(&text);
+            if paths.is_empty() {
+                return false;
+            }
+            sender.input(AppMsg::ImportPaths(paths));
+            true
+        }
+    ));
+    widget.as_ref().add_controller(text_target);
+}
+
+fn choose_import_mode(
+    window: &gtk::Window,
+    sender: ComponentSender<AppModel>,
+    paths: Vec<PathBuf>,
+) {
+    let dialog = gtk::MessageDialog::builder()
+        .transient_for(window)
+        .modal(true)
+        .message_type(gtk::MessageType::Question)
+        .text("Import into current timeline?")
+        .secondary_text("Frames are already loaded. Choose whether to append, prepend, or replace them with the new images.")
+        .build();
+    dialog.add_buttons(&[
+        ("Append", gtk::ResponseType::Other(0)),
+        ("Prepend", gtk::ResponseType::Other(1)),
+        ("Replace", gtk::ResponseType::Other(2)),
+        ("Cancel", gtk::ResponseType::Cancel),
+    ]);
+    dialog.connect_response(move |dialog, response| {
+        let mode = match response {
+            gtk::ResponseType::Other(0) => Some(ImportMode::Append),
+            gtk::ResponseType::Other(1) => Some(ImportMode::Prepend),
+            gtk::ResponseType::Other(2) => Some(ImportMode::Replace),
+            _ => None,
+        };
+        dialog.close();
+        if let Some(mode) = mode {
+            sender.input(AppMsg::ImportPathsWithMode {
+                paths: paths.clone(),
+                mode,
+            });
+        }
+    });
+    dialog.present();
+}
+
 fn filter_image_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths
         .into_iter()
@@ -1639,7 +1741,9 @@ fn parse_uri_list(text: &str) -> Vec<PathBuf> {
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
-            gio::File::for_uri(line).path()
+            gio::File::for_uri(line)
+                .path()
+                .or_else(|| Path::new(line).is_absolute().then(|| PathBuf::from(line)))
         })
         .collect()
 }
