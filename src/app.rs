@@ -2863,12 +2863,11 @@ impl Component for AppModel {
                     self.invalidate_export_preview();
                 }
                 DimensionPreset::Custom => {
-                    if self.export_profile.output_width.is_none() {
-                        self.export_profile.output_width = Some(1280);
-                    }
-                    if self.export_profile.output_height.is_none() {
-                        self.export_profile.output_height = Some(720);
-                    }
+                    let (width, height) = self
+                        .preferred_export_custom_dimensions()
+                        .unwrap_or((1280, 720));
+                    self.export_profile.output_width = Some(width);
+                    self.export_profile.output_height = Some(height);
                     self.invalidate_export_preview();
                     let _ = self.set_advanced_mode(true);
                 }
@@ -4705,6 +4704,15 @@ impl AppModel {
                     (width > 0 && height > 0).then_some(ResizeTarget { width, height })
                 }
             },
+        }
+    }
+
+    fn preferred_export_custom_dimensions(&self) -> Option<(u32, u32)> {
+        if self.quick_resize_preset == DimensionPreset::Custom {
+            self.quick_resize_target()
+                .map(|target| (target.width, target.height))
+        } else {
+            None
         }
     }
 

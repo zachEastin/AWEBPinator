@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Copy custom resize dimensions into Export custom size
+
+- Status: Done
+- Request: When the Export tab's `Export Size` preset is set to `Custom`, seed it from the current quick-resize custom dimensions instead of the old fixed default.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`, `git diff --check`, `timeout 5s cargo run >/tmp/awebpinator-export-custom-size-smoke.log 2>&1`
+- Notes: `Export Size -> Custom` now copies the active quick-resize custom target into the export width and height fields when the quick-resize preset is also `Custom`, instead of defaulting to `1280x720`. In this environment, the bounded GTK run exited early with code `0` after launching, so it was treated as inconclusive rather than a timeout-smoke pass.
+
 ### 2026-04-24 - Make resize global and clamp preview scaling
 
 - Status: Done
