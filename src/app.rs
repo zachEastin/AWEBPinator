@@ -374,6 +374,20 @@ struct ExportWorkerState {
     result: Option<Result<ExportJob, String>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TimelineRepeatAction {
+    StepBackward,
+    StepForward,
+    GoToBeginning,
+    GoToEnd,
+    ExtendSelectionBackward,
+    ExtendSelectionForward,
+    ExtendSelectionToBeginning,
+    ExtendSelectionToEnd,
+    MoveSelectionUp,
+    MoveSelectionDown,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExportStartRequest {
     frames: Vec<FrameItem>,
@@ -440,6 +454,7 @@ pub struct AppWidgets {
     export_body: gtk::Box,
     export_settings_column: gtk::Box,
     timeline_strip: gtk::Box,
+    frame_scroll: gtk::ScrolledWindow,
     nav_first_button: gtk::Button,
     nav_prev_button: gtk::Button,
     nav_play_button: gtk::Button,
@@ -1815,11 +1830,21 @@ impl Component for AppModel {
 
         let key_controller = gtk::EventControllerKey::new();
         key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let active_timeline_repeat = Rc::new(Cell::new(None::<TimelineRepeatAction>));
+        let timeline_repeat_generation = Rc::new(Cell::new(0_u64));
         key_controller.connect_key_pressed(clone!(
             #[strong]
             sender,
             #[strong]
             window,
+            #[strong]
+            frame_scroll,
+            #[strong]
+            timeline_strip,
+            #[strong]
+            active_timeline_repeat,
+            #[strong]
+            timeline_repeat_generation,
             move |_, key, _, state| {
                 if !should_handle_timeline_shortcuts(&window) {
                     return false.into();
@@ -1828,6 +1853,30 @@ impl Component for AppModel {
                 let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
                 let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
                 let alt = state.contains(gdk::ModifierType::ALT_MASK);
+                if let Some(action) = timeline_repeat_action_for_key(ctrl, shift, alt, key) {
+                    if active_timeline_repeat.get() != Some(action) {
+                        active_timeline_repeat.set(Some(action));
+                        let generation = timeline_repeat_generation.get().wrapping_add(1);
+                        timeline_repeat_generation.set(generation);
+                        dispatch_timeline_repeat_action(
+                            action,
+                            &sender,
+                            &frame_scroll,
+                            &timeline_strip,
+                        );
+                        schedule_timeline_repeat(
+                            action,
+                            generation,
+                            sender.clone(),
+                            frame_scroll.clone(),
+                            timeline_strip.clone(),
+                            active_timeline_repeat.clone(),
+                            timeline_repeat_generation.clone(),
+                        );
+                    }
+                    return true.into();
+                }
+
                 let handled = match (ctrl, shift, alt, key) {
                     (true, false, false, gdk::Key::a) | (true, false, false, gdk::Key::A) => {
                         sender.input(AppMsg::SelectAllFrames);
@@ -1861,6 +1910,11 @@ impl Component for AppModel {
                     | (false, true, false, gdk::Key::KP_Home)
                     | (true, true, false, gdk::Key::Left)
                     | (true, true, false, gdk::Key::KP_Left) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::BoundaryStart,
+                        );
                         sender.input(AppMsg::ExtendSelectionToBoundary { end: false });
                         true
                     }
@@ -1868,6 +1922,11 @@ impl Component for AppModel {
                     | (false, true, false, gdk::Key::KP_End)
                     | (true, true, false, gdk::Key::Right)
                     | (true, true, false, gdk::Key::KP_Right) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::BoundaryEnd,
+                        );
                         sender.input(AppMsg::ExtendSelectionToBoundary { end: true });
                         true
                     }
@@ -1875,11 +1934,21 @@ impl Component for AppModel {
                     | (false, false, false, gdk::Key::KP_Home)
                     | (true, false, false, gdk::Key::Left)
                     | (true, false, false, gdk::Key::KP_Left) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::BoundaryStart,
+                        );
                         sender.input(AppMsg::GoToBeginning);
                         true
                     }
                     (false, true, false, gdk::Key::Left)
                     | (false, true, false, gdk::Key::KP_Left) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::FirstUnselectedBackward,
+                        );
                         sender.input(AppMsg::ExtendSelectionByStep(-1));
                         true
                     }
@@ -1889,6 +1958,11 @@ impl Component for AppModel {
                     }
                     (false, false, false, gdk::Key::Left)
                     | (false, false, false, gdk::Key::KP_Left) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::Previous,
+                        );
                         sender.input(AppMsg::StepBackward);
                         true
                     }
@@ -1899,6 +1973,11 @@ impl Component for AppModel {
                     }
                     (false, true, false, gdk::Key::Right)
                     | (false, true, false, gdk::Key::KP_Right) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::FirstUnselectedForward,
+                        );
                         sender.input(AppMsg::ExtendSelectionByStep(1));
                         true
                     }
@@ -1909,6 +1988,11 @@ impl Component for AppModel {
                     }
                     (false, false, false, gdk::Key::Right)
                     | (false, false, false, gdk::Key::KP_Right) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::Next,
+                        );
                         sender.input(AppMsg::StepForward);
                         true
                     }
@@ -1916,6 +2000,11 @@ impl Component for AppModel {
                     | (false, false, false, gdk::Key::KP_End)
                     | (true, false, false, gdk::Key::Right)
                     | (true, false, false, gdk::Key::KP_Right) => {
+                        pre_scroll_timeline_target(
+                            &frame_scroll,
+                            &timeline_strip,
+                            TimelineScrollTarget::BoundaryEnd,
+                        );
                         sender.input(AppMsg::GoToEnd);
                         true
                     }
@@ -1923,6 +2012,19 @@ impl Component for AppModel {
                 };
 
                 handled.into()
+            }
+        ));
+        key_controller.connect_key_released(clone!(
+            #[strong]
+            active_timeline_repeat,
+            #[strong]
+            timeline_repeat_generation,
+            move |_, key, _, _| {
+                if should_stop_timeline_repeat_for_key(key) {
+                    active_timeline_repeat.set(None);
+                    timeline_repeat_generation
+                        .set(timeline_repeat_generation.get().wrapping_add(1));
+                }
             }
         ));
         window.add_controller(key_controller);
@@ -2446,6 +2548,7 @@ impl Component for AppModel {
             export_body,
             export_settings_column: export_right,
             timeline_strip,
+            frame_scroll,
             nav_first_button,
             nav_prev_button,
             nav_play_button,
@@ -3665,12 +3768,27 @@ impl Component for AppModel {
                     frame,
                     index,
                     self.selection.contains(&frame.id),
+                    self.timeline_scroll_target_id() == Some(frame.id),
                     sender.clone(),
                 ));
             }
 
             widgets.timeline_render_signature = timeline_render_signature;
         }
+
+        sync_timeline_tile_state(
+            &widgets.timeline_strip,
+            &frame_ids,
+            &self.selection,
+            self.timeline_scroll_target_id(),
+        );
+
+        ensure_timeline_target_visible(
+            &widgets.frame_scroll,
+            &widgets.timeline_strip,
+            &frame_ids,
+            self.timeline_scroll_target_id(),
+        );
     }
 }
 
@@ -3895,16 +4013,22 @@ impl AppModel {
     }
 
     fn primary_selected_id(&self) -> Option<u64> {
-        self.timeline
-            .frames()
-            .iter()
-            .find(|frame| self.selection.contains(&frame.id))
-            .map(|frame| frame.id)
+        resolved_primary_selected_id(
+            &self.timeline_frame_ids(),
+            &self.selection,
+            self.selection_anchor_id,
+        )
     }
 
     fn primary_selected_frame(&self) -> Option<&FrameItem> {
         let id = self.primary_selected_id()?;
         self.timeline.frames().iter().find(|frame| frame.id == id)
+    }
+
+    fn timeline_scroll_target_id(&self) -> Option<u64> {
+        self.selection_anchor_id
+            .filter(|id| self.timeline.frames().iter().any(|frame| frame.id == *id))
+            .or_else(|| self.primary_selected_id())
     }
 
     fn timeline_frame_ids(&self) -> Vec<u64> {
@@ -4601,9 +4725,6 @@ impl AppModel {
                 .and_then(timeline_file_stamp)
                 .hash(&mut hasher);
         }
-        for selected_id in &self.selection {
-            selected_id.hash(&mut hasher);
-        }
         hasher.finish()
     }
 
@@ -5012,6 +5133,7 @@ fn build_timeline_tile(
     frame: &FrameItem,
     index: usize,
     selected: bool,
+    active: bool,
     sender: ComponentSender<AppModel>,
 ) -> gtk::Box {
     let frame_id = frame.id;
@@ -5032,6 +5154,9 @@ fn build_timeline_tile(
     tile.add_css_class("timeline-tile");
     if selected {
         tile.add_css_class("timeline-tile-selected");
+    }
+    if active {
+        tile.add_css_class("timeline-tile-active");
     }
 
     let drag_source = gtk::DragSource::builder()
@@ -5523,6 +5648,413 @@ fn page_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .child(child)
         .build()
+}
+
+fn ensure_timeline_target_visible(
+    frame_scroll: &gtk::ScrolledWindow,
+    timeline_strip: &gtk::Box,
+    frame_ids: &[u64],
+    target_id: Option<u64>,
+) {
+    let Some(target_id) = target_id else {
+        return;
+    };
+    let Some(target_index) = frame_ids.iter().position(|id| *id == target_id) else {
+        return;
+    };
+
+    if !ensure_timeline_index_visible_now(frame_scroll, timeline_strip, target_index) {
+        let frame_scroll = frame_scroll.clone();
+        let timeline_strip = timeline_strip.clone();
+        gtk::glib::idle_add_local_once(move || {
+            let _ = ensure_timeline_index_visible_now(&frame_scroll, &timeline_strip, target_index);
+        });
+    }
+}
+
+fn timeline_repeat_action_for_key(
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    key: gdk::Key,
+) -> Option<TimelineRepeatAction> {
+    match (ctrl, shift, alt, key) {
+        (false, true, false, gdk::Key::Home)
+        | (false, true, false, gdk::Key::KP_Home)
+        | (true, true, false, gdk::Key::Left)
+        | (true, true, false, gdk::Key::KP_Left) => {
+            Some(TimelineRepeatAction::ExtendSelectionToBeginning)
+        }
+        (false, true, false, gdk::Key::End)
+        | (false, true, false, gdk::Key::KP_End)
+        | (true, true, false, gdk::Key::Right)
+        | (true, true, false, gdk::Key::KP_Right) => {
+            Some(TimelineRepeatAction::ExtendSelectionToEnd)
+        }
+        (false, false, false, gdk::Key::Home)
+        | (false, false, false, gdk::Key::KP_Home)
+        | (true, false, false, gdk::Key::Left)
+        | (true, false, false, gdk::Key::KP_Left) => Some(TimelineRepeatAction::GoToBeginning),
+        (false, true, false, gdk::Key::Left) | (false, true, false, gdk::Key::KP_Left) => {
+            Some(TimelineRepeatAction::ExtendSelectionBackward)
+        }
+        (false, false, true, gdk::Key::Up) | (false, false, true, gdk::Key::KP_Up) => {
+            Some(TimelineRepeatAction::MoveSelectionUp)
+        }
+        (false, false, false, gdk::Key::Left) | (false, false, false, gdk::Key::KP_Left) => {
+            Some(TimelineRepeatAction::StepBackward)
+        }
+        (false, true, false, gdk::Key::Right) | (false, true, false, gdk::Key::KP_Right) => {
+            Some(TimelineRepeatAction::ExtendSelectionForward)
+        }
+        (false, false, true, gdk::Key::Down) | (false, false, true, gdk::Key::KP_Down) => {
+            Some(TimelineRepeatAction::MoveSelectionDown)
+        }
+        (false, false, false, gdk::Key::Right) | (false, false, false, gdk::Key::KP_Right) => {
+            Some(TimelineRepeatAction::StepForward)
+        }
+        (false, false, false, gdk::Key::End)
+        | (false, false, false, gdk::Key::KP_End)
+        | (true, false, false, gdk::Key::Right)
+        | (true, false, false, gdk::Key::KP_Right) => Some(TimelineRepeatAction::GoToEnd),
+        _ => None,
+    }
+}
+
+fn should_stop_timeline_repeat_for_key(key: gdk::Key) -> bool {
+    matches!(
+        key,
+        gdk::Key::Left
+            | gdk::Key::KP_Left
+            | gdk::Key::Right
+            | gdk::Key::KP_Right
+            | gdk::Key::Home
+            | gdk::Key::KP_Home
+            | gdk::Key::End
+            | gdk::Key::KP_End
+            | gdk::Key::Up
+            | gdk::Key::KP_Up
+            | gdk::Key::Down
+            | gdk::Key::KP_Down
+            | gdk::Key::Shift_L
+            | gdk::Key::Shift_R
+            | gdk::Key::Control_L
+            | gdk::Key::Control_R
+            | gdk::Key::Alt_L
+            | gdk::Key::Alt_R
+    )
+}
+
+fn dispatch_timeline_repeat_action(
+    action: TimelineRepeatAction,
+    sender: &ComponentSender<AppModel>,
+    frame_scroll: &gtk::ScrolledWindow,
+    timeline_strip: &gtk::Box,
+) {
+    match action {
+        TimelineRepeatAction::StepBackward => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::Previous,
+            );
+            sender.input(AppMsg::StepBackward);
+        }
+        TimelineRepeatAction::StepForward => {
+            pre_scroll_timeline_target(frame_scroll, timeline_strip, TimelineScrollTarget::Next);
+            sender.input(AppMsg::StepForward);
+        }
+        TimelineRepeatAction::GoToBeginning => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::BoundaryStart,
+            );
+            sender.input(AppMsg::GoToBeginning);
+        }
+        TimelineRepeatAction::GoToEnd => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::BoundaryEnd,
+            );
+            sender.input(AppMsg::GoToEnd);
+        }
+        TimelineRepeatAction::ExtendSelectionBackward => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::FirstUnselectedBackward,
+            );
+            sender.input(AppMsg::ExtendSelectionByStep(-1));
+        }
+        TimelineRepeatAction::ExtendSelectionForward => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::FirstUnselectedForward,
+            );
+            sender.input(AppMsg::ExtendSelectionByStep(1));
+        }
+        TimelineRepeatAction::ExtendSelectionToBeginning => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::BoundaryStart,
+            );
+            sender.input(AppMsg::ExtendSelectionToBoundary { end: false });
+        }
+        TimelineRepeatAction::ExtendSelectionToEnd => {
+            pre_scroll_timeline_target(
+                frame_scroll,
+                timeline_strip,
+                TimelineScrollTarget::BoundaryEnd,
+            );
+            sender.input(AppMsg::ExtendSelectionToBoundary { end: true });
+        }
+        TimelineRepeatAction::MoveSelectionUp => {
+            sender.input(AppMsg::MoveSelectionUp);
+        }
+        TimelineRepeatAction::MoveSelectionDown => {
+            sender.input(AppMsg::MoveSelectionDown);
+        }
+    }
+}
+
+fn schedule_timeline_repeat(
+    action: TimelineRepeatAction,
+    generation: u64,
+    sender: ComponentSender<AppModel>,
+    frame_scroll: gtk::ScrolledWindow,
+    timeline_strip: gtk::Box,
+    active_timeline_repeat: Rc<Cell<Option<TimelineRepeatAction>>>,
+    timeline_repeat_generation: Rc<Cell<u64>>,
+) {
+    gtk::glib::timeout_add_local_once(Duration::from_millis(250), move || {
+        if active_timeline_repeat.get() != Some(action)
+            || timeline_repeat_generation.get() != generation
+        {
+            return;
+        }
+
+        gtk::glib::timeout_add_local(
+            Duration::from_millis(35),
+            clone!(
+                #[strong]
+                sender,
+                #[strong]
+                frame_scroll,
+                #[strong]
+                timeline_strip,
+                #[strong]
+                active_timeline_repeat,
+                #[strong]
+                timeline_repeat_generation,
+                move || {
+                    if active_timeline_repeat.get() != Some(action)
+                        || timeline_repeat_generation.get() != generation
+                    {
+                        return gtk::glib::ControlFlow::Break;
+                    }
+
+                    dispatch_timeline_repeat_action(
+                        action,
+                        &sender,
+                        &frame_scroll,
+                        &timeline_strip,
+                    );
+                    gtk::glib::ControlFlow::Continue
+                }
+            ),
+        );
+    });
+}
+
+#[derive(Clone, Copy)]
+enum TimelineScrollTarget {
+    Previous,
+    Next,
+    BoundaryStart,
+    BoundaryEnd,
+    FirstUnselectedBackward,
+    FirstUnselectedForward,
+}
+
+fn pre_scroll_timeline_target(
+    frame_scroll: &gtk::ScrolledWindow,
+    timeline_strip: &gtk::Box,
+    target: TimelineScrollTarget,
+) {
+    let Some(active_index) =
+        find_child_index_with_css_class(timeline_strip.upcast_ref(), "timeline-tile-active")
+    else {
+        return;
+    };
+    let Some(target_index) = resolve_pre_scroll_target_index(timeline_strip, active_index, target)
+    else {
+        return;
+    };
+    let _ = ensure_timeline_index_visible_now(frame_scroll, timeline_strip, target_index);
+}
+
+fn sync_timeline_tile_state(
+    timeline_strip: &gtk::Box,
+    frame_ids: &[u64],
+    selection: &BTreeSet<u64>,
+    active_id: Option<u64>,
+) {
+    for (index, frame_id) in frame_ids.iter().copied().enumerate() {
+        let Some(tile) = nth_child(timeline_strip.upcast_ref(), index) else {
+            break;
+        };
+        set_widget_css_class(
+            &tile,
+            "timeline-tile-selected",
+            selection.contains(&frame_id),
+        );
+        set_widget_css_class(&tile, "timeline-tile-active", active_id == Some(frame_id));
+    }
+}
+
+fn ensure_timeline_index_visible_now(
+    frame_scroll: &gtk::ScrolledWindow,
+    timeline_strip: &gtk::Box,
+    target_index: usize,
+) -> bool {
+    let Some(target_tile) = nth_child(timeline_strip.upcast_ref(), target_index) else {
+        return true;
+    };
+
+    let target_allocation = target_tile.allocation();
+    let adjustment = frame_scroll.hadjustment();
+    let page_size = adjustment.page_size();
+    if target_allocation.width() <= 0 || page_size <= 0.0 {
+        return false;
+    }
+
+    let target_start = f64::from(target_allocation.x());
+    let target_end = target_start + f64::from(target_allocation.width());
+    if let Some(value) = timeline_visible_scroll_value(
+        adjustment.value(),
+        page_size,
+        target_start,
+        target_end,
+        adjustment.lower(),
+        adjustment.upper(),
+    ) {
+        adjustment.set_value(value);
+    }
+
+    true
+}
+
+fn nth_child(parent: &gtk::Widget, index: usize) -> Option<gtk::Widget> {
+    let mut child = parent.first_child()?;
+    for _ in 0..index {
+        child = child.next_sibling()?;
+    }
+    Some(child)
+}
+
+fn child_count(parent: &gtk::Widget) -> usize {
+    let mut count = 0usize;
+    let mut child = parent.first_child();
+    while let Some(current) = child {
+        count += 1;
+        child = current.next_sibling();
+    }
+    count
+}
+
+fn find_child_index_with_css_class(parent: &gtk::Widget, class_name: &str) -> Option<usize> {
+    let mut index = 0usize;
+    let mut child = parent.first_child();
+    while let Some(current) = child {
+        if current.has_css_class(class_name) {
+            return Some(index);
+        }
+        index += 1;
+        child = current.next_sibling();
+    }
+    None
+}
+
+fn resolve_pre_scroll_target_index(
+    timeline_strip: &gtk::Box,
+    active_index: usize,
+    target: TimelineScrollTarget,
+) -> Option<usize> {
+    let count = child_count(timeline_strip.upcast_ref());
+    if count == 0 {
+        return None;
+    }
+
+    match target {
+        TimelineScrollTarget::Previous => Some(active_index.saturating_sub(1)),
+        TimelineScrollTarget::Next => Some((active_index + 1).min(count.saturating_sub(1))),
+        TimelineScrollTarget::BoundaryStart => Some(0),
+        TimelineScrollTarget::BoundaryEnd => Some(count.saturating_sub(1)),
+        TimelineScrollTarget::FirstUnselectedBackward => {
+            first_unselected_tile_index_in_direction(timeline_strip.upcast_ref(), active_index, -1)
+                .or(Some(active_index))
+        }
+        TimelineScrollTarget::FirstUnselectedForward => {
+            first_unselected_tile_index_in_direction(timeline_strip.upcast_ref(), active_index, 1)
+                .or(Some(active_index))
+        }
+    }
+}
+
+fn first_unselected_tile_index_in_direction(
+    parent: &gtk::Widget,
+    start_index: usize,
+    direction: isize,
+) -> Option<usize> {
+    let count = child_count(parent);
+    let mut index = start_index as isize + direction;
+    while index >= 0 && (index as usize) < count {
+        let child = nth_child(parent, index as usize)?;
+        if !child.has_css_class("timeline-tile-selected") {
+            return Some(index as usize);
+        }
+        index += direction;
+    }
+    None
+}
+
+fn timeline_visible_scroll_value(
+    viewport_start: f64,
+    page_size: f64,
+    target_start: f64,
+    target_end: f64,
+    lower: f64,
+    upper: f64,
+) -> Option<f64> {
+    let viewport_end = viewport_start + page_size;
+    let max_value = (upper - page_size).max(lower);
+
+    if target_start < viewport_start {
+        Some(target_start.clamp(lower, max_value))
+    } else if target_end > viewport_end {
+        Some((target_end - page_size).clamp(lower, max_value))
+    } else {
+        None
+    }
+}
+
+fn resolved_primary_selected_id(
+    ordered_ids: &[u64],
+    selection: &BTreeSet<u64>,
+    selection_anchor_id: Option<u64>,
+) -> Option<u64> {
+    selection_anchor_id
+        .filter(|id| selection.contains(id) && ordered_ids.contains(id))
+        .or_else(|| {
+            ordered_ids
+                .iter()
+                .copied()
+                .find(|id| selection.contains(id))
+        })
 }
 
 fn timeline_tile_picture_size(frame: &FrameItem) -> (i32, i32) {
@@ -6834,10 +7366,12 @@ mod tests {
         CropAnchor, CropPreset, PreviewRenderSize, crop_rect_for_frame, following_frame_id,
         frame_effective_dimensions, immediate_preview_path, playback_start_frame_id,
         preview_render_size_for_dimensions, preview_render_size_from_values,
-        preview_result_is_usable, scale_dimension_by_ratio, scaled_resize_dimension,
-        should_refresh_preview, step_frame_id, timeline_tile_picture_size, usable_preview_path,
+        preview_result_is_usable, resolved_primary_selected_id, scale_dimension_by_ratio,
+        scaled_resize_dimension, should_refresh_preview, step_frame_id, timeline_tile_picture_size,
+        timeline_visible_scroll_value, usable_preview_path,
     };
     use crate::types::{CropRect, FitMode, FrameItem, ResizeTarget, TransformSpec};
+    use std::collections::BTreeSet;
 
     #[test]
     fn step_frame_navigation_clamps_to_timeline_bounds() {
@@ -6855,6 +7389,56 @@ mod tests {
 
         assert_eq!(step_frame_id(&frame_ids, None, -1), None);
         assert_eq!(step_frame_id(&frame_ids, None, 1), None);
+    }
+
+    #[test]
+    fn timeline_scroll_does_not_move_when_target_is_already_visible() {
+        assert_eq!(
+            timeline_visible_scroll_value(100.0, 200.0, 120.0, 260.0, 0.0, 1_000.0),
+            None
+        );
+    }
+
+    #[test]
+    fn timeline_scroll_moves_left_edge_into_view() {
+        assert_eq!(
+            timeline_visible_scroll_value(100.0, 200.0, 60.0, 140.0, 0.0, 1_000.0),
+            Some(60.0)
+        );
+    }
+
+    #[test]
+    fn timeline_scroll_moves_right_edge_into_view() {
+        assert_eq!(
+            timeline_visible_scroll_value(100.0, 200.0, 260.0, 340.0, 0.0, 1_000.0),
+            Some(140.0)
+        );
+    }
+
+    #[test]
+    fn timeline_scroll_clamps_to_upper_bound() {
+        assert_eq!(
+            timeline_visible_scroll_value(700.0, 200.0, 980.0, 1_060.0, 0.0, 1_000.0),
+            Some(800.0)
+        );
+    }
+
+    #[test]
+    fn primary_selected_prefers_anchor_when_it_is_still_selected() {
+        let selection: BTreeSet<_> = [20, 30].into_iter().collect();
+        assert_eq!(
+            resolved_primary_selected_id(&[10, 20, 30], &selection, Some(30)),
+            Some(30)
+        );
+    }
+
+    #[test]
+    fn primary_selected_falls_back_when_anchor_is_not_selected() {
+        let selection: BTreeSet<_> = [20, 30].into_iter().collect();
+        assert_eq!(
+            resolved_primary_selected_id(&[10, 20, 30], &selection, Some(10)),
+            Some(20)
+        );
     }
 
     #[test]
