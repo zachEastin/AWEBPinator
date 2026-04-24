@@ -11,6 +11,33 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Tighten export column split and settings alignment
+
+- Status: Done
+- Request: Make the Export tab left/right split 50/50, convert Export Settings to a stable one-third/two-thirds row layout, and vertically center the Export Action content while using a working success icon.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`, `git diff --check`
+- Notes: Export now keeps an even left/right split in regular layout, the settings rows use a grid-backed one-third/two-thirds split so controls line up cleanly, and the action card content is vertically centered with `object-select-symbolic` replacing the missing success icon.
+
+### 2026-04-24 - Refine export tab visual hierarchy and blue control styling
+
+- Status: Done
+- Request: Remove section-header icons, shift more controls onto the blue visual language, clean up the Export tab preview/settings/summary/action sections, and improve the export action status presentation.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`, `git diff --check`
+- Notes: Removed section-header icons globally, moved buttons and form controls further into the blue visual treatment, shortened the Export preview, removed the leftover export-preview metadata binding, converted Export Summary into a two-column label/value layout, and rebuilt Export Action as an icon + status heading + detail copy block above stacked actions.
+
+### 2026-04-24 - Adjust export preview card and summary/action row
+
+- Status: Done
+- Request: In the Export tab, make the preview section a fixed height and place Export Summary and Export Action in a single row beneath it like the provided screenshot.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`, `git diff --check`
+- Notes: The Export tab now keeps the preview card at a stable height, moves Export Summary and Export Action into a shared row beneath that preview, and stacks the action buttons vertically inside their card so the two cards fit cleanly side by side.
+
 ### 2026-04-24 - Fix responsive resizing and custom titlebar
 
 - Status: Done

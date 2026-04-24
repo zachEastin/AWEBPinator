@@ -368,7 +368,6 @@ pub struct AppWidgets {
     loop_settings_column: gtk::Box,
     export_body: gtk::Box,
     export_settings_column: gtk::Box,
-    timeline_hint_label: gtk::Label,
     timeline_strip: gtk::Box,
     timeline_power_box: gtk::Box,
     nav_first_button: gtk::Button,
@@ -390,7 +389,6 @@ pub struct AppWidgets {
     loop_preview_picture: gtk::Picture,
     loop_preview_meta: gtk::Label,
     export_preview_picture: gtk::Picture,
-    export_preview_meta: gtk::Label,
     crop_summary_label: gtk::Label,
     crop_square_button: gtk::Button,
     crop_widescreen_button: gtk::Button,
@@ -417,12 +415,19 @@ pub struct AppWidgets {
     export_preset_balanced_button: gtk::Button,
     export_preset_high_button: gtk::Button,
     export_preset_lossless_button: gtk::Button,
-    export_summary_label: gtk::Label,
+    export_summary_dimensions_value: gtk::Label,
+    export_summary_frame_count_value: gtk::Label,
+    export_summary_duration_value: gtk::Label,
+    export_summary_loop_count_value: gtk::Label,
+    export_summary_quality_value: gtk::Label,
+    export_summary_estimated_size_value: gtk::Label,
     export_advanced_box: gtk::Box,
     edit_advanced_box: gtk::Box,
     preview_export_button: gtk::Button,
     export_button: gtk::Button,
-    export_action_summary_label: gtk::Label,
+    export_action_icon: gtk::Image,
+    export_action_title_label: gtk::Label,
+    export_action_detail_label: gtk::Label,
     quality_scale: gtk::Scale,
     quality_spin: gtk::SpinButton,
     width_spin: gtk::SpinButton,
@@ -1097,6 +1102,7 @@ impl Component for AppModel {
         let export_body = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(16)
+            .homogeneous(true)
             .build();
         let export_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1110,22 +1116,23 @@ impl Component for AppModel {
             .build();
         let export_preview_picture = gtk::Picture::new();
         set_accessible_label(&export_preview_picture, "Export preview");
-        export_preview_picture.set_size_request(320, 200);
+        export_preview_picture.set_size_request(320, 225);
         export_preview_picture.set_can_shrink(true);
         export_preview_picture.set_hexpand(true);
-        export_preview_picture.set_vexpand(true);
+        export_preview_picture.set_vexpand(false);
+        export_preview_picture.set_valign(gtk::Align::Start);
         export_preview_picture.add_css_class("preview-image");
+        export_preview_picture.add_css_class("export-preview-fixed");
         install_preview_layout_watch(&export_preview_picture, WorkflowTab::Export, sender.clone());
-        let export_preview_intro = helper_label("This is an estimate of your exported file.");
-        let export_preview_meta = helper_label("Select a frame to preview it.");
-        export_preview_box.append(&export_preview_intro);
         export_preview_box.append(&export_preview_picture);
-        export_preview_box.append(&export_preview_meta);
-        export_left.append(&section("Preview", &export_preview_box));
+        let export_preview_section = section("Preview", &export_preview_box);
+        export_preview_section.set_hexpand(true);
+        export_left.append(&export_preview_section);
 
         let export_right = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
+            .hexpand(true)
             .build();
         let preset_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1181,22 +1188,29 @@ impl Component for AppModel {
         let output_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(0)
+            .hexpand(true)
             .build();
         output_row.add_css_class("combined-input");
         let output_entry = gtk::Entry::new();
         let suppress_output_entry_change = Rc::new(Cell::new(false));
         set_accessible_label(&output_entry, "Export output path");
         output_entry.set_placeholder_text(Some("/path/to/output.webp"));
+        output_entry.add_css_class("control-surface");
         let browse_output_button =
             build_icon_button("folder-open-symbolic", "Choose export output folder");
         let export_size_combo = combo_for_dimension_preset();
+        export_size_combo.add_css_class("control-surface");
         let width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
+        width_spin.add_css_class("control-surface");
         let height_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
+        height_spin.add_css_class("control-surface");
         let quality_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
         quality_scale.set_draw_value(false);
         quality_scale.set_hexpand(true);
+        quality_scale.add_css_class("control-surface");
         let quality_spin = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
         quality_spin.set_width_chars(3);
+        quality_spin.add_css_class("control-surface");
         set_accessible_label(&export_size_combo, "Export size preset");
         set_accessible_label(&width_spin, "Export width");
         set_accessible_label(&height_spin, "Export height");
@@ -1205,21 +1219,31 @@ impl Component for AppModel {
         quality_spin.set_value(75.0);
         let lossless_check = gtk::CheckButton::with_label("Lossless");
         let encoder_combo = combo_for_encoder_preset();
+        encoder_combo.add_css_class("control-surface");
         let cr_threshold_spin = gtk::SpinButton::with_range(0.0, 1024.0, 1.0);
+        cr_threshold_spin.add_css_class("control-surface");
         let cr_size_spin = gtk::SpinButton::with_range(0.0, 256.0, 1.0);
+        cr_size_spin.add_css_class("control-surface");
         set_accessible_label(&encoder_combo, "Encoder preset");
         set_accessible_label(&cr_threshold_spin, "Conditional replenishment threshold");
         set_accessible_label(&cr_size_spin, "Conditional replenishment block size");
         cr_size_spin.set_value(16.0);
         let loop_spin = gtk::SpinButton::with_range(0.0, 9999.0, 1.0);
         let loop_count_combo = combo_for_loop_count();
+        loop_count_combo.add_css_class("control-surface");
         set_accessible_label(&loop_spin, "Export loop count");
         set_accessible_label(&loop_count_combo, "Export loop count");
-        let overwrite_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+        let overwrite_switch = gtk::Switch::builder()
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .build();
+        overwrite_switch.add_css_class("control-surface");
         overwrite_switch.set_active(true);
         set_accessible_label(&overwrite_switch, "Overwrite existing export");
         let fit_mode_combo = combo_for_fit_mode();
+        fit_mode_combo.add_css_class("control-surface");
         let raw_args_entry = gtk::Entry::new();
+        raw_args_entry.add_css_class("control-surface");
         set_accessible_label(&fit_mode_combo, "Export fit mode");
         set_accessible_label(&raw_args_entry, "Advanced ffmpeg arguments");
         raw_args_entry.set_placeholder_text(Some("-metadata title='Animated export'"));
@@ -1229,12 +1253,14 @@ impl Component for AppModel {
             "icon-tone-green",
         );
         let preview_export_button =
-            build_labeled_button("Preview Export", "view-preview-symbolic", "icon-tone-amber");
+            build_labeled_button("Preview Export", "view-reveal-symbolic", "icon-tone-cyan");
+        export_button.add_css_class("pill-button");
         output_row.append(&output_entry);
         output_row.append(&browse_output_button);
         let quality_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .hexpand(true)
             .build();
         quality_row.append(&quality_scale);
         quality_row.append(&quality_spin);
@@ -1258,33 +1284,123 @@ impl Component for AppModel {
             "How many times should the animation loop? 0 = infinite loop.",
             &loop_count_combo,
         ));
-        export_basic_box.append(&settings_row(
+        export_basic_box.append(&settings_toggle_row(
             "Overwrite Existing",
             "Replace the file if it already exists.",
             &overwrite_switch,
         ));
-        export_right.append(&section("Export Settings", &export_basic_box));
+        export_right.append(&section_without_header(&export_basic_box));
 
-        let export_summary_label = summary_label("No frames imported yet.");
-        export_right.append(&section("Export Summary", &export_summary_label));
+        let export_summary_action_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(12)
+            .homogeneous(true)
+            .build();
+        export_summary_action_row.add_css_class("export-summary-action-row");
+        let export_summary_grid = gtk::Grid::builder()
+            .column_spacing(18)
+            .row_spacing(10)
+            .build();
+        export_summary_grid.add_css_class("export-summary-grid");
+        let export_summary_format_value = summary_value_label();
+        export_summary_format_value.set_label("Animated WebP");
+        let export_summary_dimensions_value = summary_value_label();
+        let export_summary_frame_count_value = summary_value_label();
+        let export_summary_duration_value = summary_value_label();
+        let export_summary_loop_count_value = summary_value_label();
+        let export_summary_quality_value = summary_value_label();
+        let export_summary_estimated_size_value = summary_value_label();
+        attach_summary_row(
+            &export_summary_grid,
+            0,
+            "Format",
+            &export_summary_format_value,
+        );
+        attach_summary_row(
+            &export_summary_grid,
+            1,
+            "Dimensions",
+            &export_summary_dimensions_value,
+        );
+        attach_summary_row(
+            &export_summary_grid,
+            2,
+            "Frame Count",
+            &export_summary_frame_count_value,
+        );
+        attach_summary_row(
+            &export_summary_grid,
+            3,
+            "Duration",
+            &export_summary_duration_value,
+        );
+        attach_summary_row(
+            &export_summary_grid,
+            4,
+            "Loop Count",
+            &export_summary_loop_count_value,
+        );
+        attach_summary_row(
+            &export_summary_grid,
+            5,
+            "Quality",
+            &export_summary_quality_value,
+        );
+        attach_summary_row(
+            &export_summary_grid,
+            6,
+            "Estimated File Size",
+            &export_summary_estimated_size_value,
+        );
+        let export_summary_section = section("Export Summary", &export_summary_grid);
+        export_summary_section.set_hexpand(true);
 
         let export_action_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
+            .valign(gtk::Align::Center)
+            .vexpand(true)
             .build();
-        let export_action_summary_label =
-            summary_label("Add frames and choose an output file to export.");
-        let export_action_row = gtk::Box::builder()
+        let export_action_header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .halign(gtk::Align::Center)
+            .build();
+        let export_action_icon = gtk::Image::from_icon_name("object-select-symbolic");
+        export_action_icon.add_css_class("export-action-icon");
+        let export_action_title_label = gtk::Label::new(Some("Add Frames"));
+        export_action_title_label.set_halign(gtk::Align::Center);
+        export_action_title_label.set_justify(gtk::Justification::Center);
+        export_action_title_label.add_css_class("export-action-title");
+        let export_action_detail_label =
+            gtk::Label::new(Some("Import frames and choose an output file to export."));
+        export_action_detail_label.set_wrap(true);
+        export_action_detail_label.set_halign(gtk::Align::Center);
+        export_action_detail_label.set_justify(gtk::Justification::Center);
+        export_action_detail_label.add_css_class("export-action-detail");
+        let export_action_buttons = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .build();
+        export_action_buttons.set_hexpand(true);
         preview_export_button.add_css_class("pill-button");
         export_button.add_css_class("suggested-action");
-        export_action_row.append(&preview_export_button);
-        export_action_row.append(&export_button);
-        export_action_box.append(&export_action_summary_label);
-        export_action_box.append(&export_action_row);
-        export_right.append(&section("Export Action", &export_action_box));
+        preview_export_button.set_hexpand(true);
+        preview_export_button.set_halign(gtk::Align::Fill);
+        export_button.set_hexpand(true);
+        export_button.set_halign(gtk::Align::Fill);
+        export_action_header.append(&export_action_icon);
+        export_action_header.append(&export_action_title_label);
+        export_action_box.append(&export_action_header);
+        export_action_box.append(&export_action_detail_label);
+        export_action_buttons.append(&export_button);
+        export_action_buttons.append(&preview_export_button);
+        export_action_box.append(&export_action_buttons);
+        let export_action_section = section_without_header(&export_action_box);
+        export_action_section.set_hexpand(true);
+        export_summary_action_row.append(&export_summary_section);
+        export_summary_action_row.append(&export_action_section);
+        export_left.append(&export_summary_action_row);
 
         let export_advanced_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1446,11 +1562,6 @@ impl Component for AppModel {
         timeline_toolbar.append(&timeline_power_box);
         timeline_toolbar.append(&spacer);
         timeline_toolbar.append(&transport_box);
-        let timeline_hint = gtk::Label::new(Some(
-            "Timeline (0 frames) · Tip: Drag thumbnails to reorder frames.",
-        ));
-        timeline_hint.set_xalign(0.0);
-        timeline_hint.add_css_class("section-title");
         let timeline_strip = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
@@ -1464,7 +1575,6 @@ impl Component for AppModel {
             .child(&timeline_strip)
             .build();
         timeline_box.append(&timeline_toolbar);
-        timeline_box.append(&timeline_hint);
         timeline_box.append(&frame_scroll);
         root.append(&timeline_box);
 
@@ -2072,7 +2182,6 @@ impl Component for AppModel {
             loop_settings_column: loop_left,
             export_body,
             export_settings_column: export_right,
-            timeline_hint_label: timeline_hint,
             timeline_strip,
             timeline_power_box,
             nav_first_button,
@@ -2094,7 +2203,6 @@ impl Component for AppModel {
             loop_preview_picture,
             loop_preview_meta,
             export_preview_picture,
-            export_preview_meta,
             crop_summary_label,
             crop_square_button,
             crop_widescreen_button,
@@ -2121,12 +2229,19 @@ impl Component for AppModel {
             export_preset_balanced_button,
             export_preset_high_button,
             export_preset_lossless_button,
-            export_summary_label,
+            export_summary_dimensions_value,
+            export_summary_frame_count_value,
+            export_summary_duration_value,
+            export_summary_loop_count_value,
+            export_summary_quality_value,
+            export_summary_estimated_size_value,
             export_advanced_box,
             edit_advanced_box,
             preview_export_button,
             export_button,
-            export_action_summary_label,
+            export_action_icon,
+            export_action_title_label,
+            export_action_detail_label,
             quality_scale,
             quality_spin,
             width_spin,
@@ -2712,6 +2827,12 @@ impl Component for AppModel {
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
         let frame_count = self.timeline.frames().len();
+        let export_frame_count = self
+            .timeline
+            .frames()
+            .iter()
+            .filter(|frame| frame.enabled)
+            .count();
         let has_frames = frame_count != 0;
         let readiness_text = self.readiness_text();
 
@@ -2742,10 +2863,6 @@ impl Component for AppModel {
                 widgets.footer_progress_bar.set_text(Some("Idle"));
             }
             widgets.footer_state_label.set_label(&readiness_text);
-            widgets.timeline_hint_label.set_label(&format!(
-                "Timeline ({} frames) · Tip: Drag thumbnails to reorder frames.",
-                frame_count
-            ));
             widgets
                 .preview_export_button
                 .set_sensitive(!self.export_completion_pending && has_frames);
@@ -2808,7 +2925,7 @@ impl Component for AppModel {
         set_size_request_if_needed(
             &widgets.export_preview_picture,
             if compact { 260 } else { 320 },
-            if compact { 160 } else { 200 },
+            if compact { 140 } else { 225 },
         );
 
         set_stack_visible_child_name_if_needed(
@@ -2864,10 +2981,6 @@ impl Component for AppModel {
         widgets.footer_progress_bar.set_fraction(0.0);
         widgets.footer_progress_bar.set_text(Some("Idle"));
         widgets.footer_state_label.set_label(&readiness_text);
-        widgets.timeline_hint_label.set_label(&format!(
-            "Timeline ({} frames) · Tip: Drag thumbnails to reorder frames.",
-            frame_count
-        ));
         widgets
             .diagnostics_overview_label
             .set_label(&self.diagnostics_overview_text());
@@ -2968,9 +3081,6 @@ impl Component for AppModel {
         widgets
             .loop_preview_meta
             .set_label(&self.loop_preview_meta_text());
-        widgets
-            .export_preview_meta
-            .set_label(&self.export_preview_meta_text());
         widgets
             .loop_source_label
             .set_label(&self.loop_source_text());
@@ -3075,11 +3185,44 @@ impl Component for AppModel {
                 .set_text(&self.export_profile.raw_args);
         }
         widgets
-            .export_summary_label
-            .set_label(&self.export_summary_text());
+            .export_summary_dimensions_value
+            .set_label(&self.export_dimensions_text());
+        widgets.export_summary_frame_count_value.set_label(&format!(
+            "{export_frame_count} frame{}",
+            if export_frame_count == 1 { "" } else { "s" }
+        ));
         widgets
-            .export_action_summary_label
-            .set_label(&self.export_action_text());
+            .export_summary_duration_value
+            .set_label(&self.export_duration_summary_text());
+        widgets
+            .export_summary_loop_count_value
+            .set_label(&self.export_loop_count_summary_text());
+        widgets
+            .export_summary_quality_value
+            .set_label(&format!("{:.0}", self.export_profile.quality));
+        widgets.export_summary_estimated_size_value.set_label(
+            &self.estimated_file_size_text(export_frame_count, self.total_duration_ms()),
+        );
+        let (action_icon, action_title, action_detail, action_class) =
+            self.export_action_presentation();
+        widgets.export_action_icon.set_icon_name(Some(action_icon));
+        widgets.export_action_title_label.set_label(action_title);
+        widgets.export_action_detail_label.set_label(action_detail);
+        for class_name in [
+            "export-action-info",
+            "export-action-success",
+            "export-action-warning",
+            "export-action-error",
+        ] {
+            widgets.export_action_icon.remove_css_class(class_name);
+            widgets
+                .export_action_title_label
+                .remove_css_class(class_name);
+        }
+        widgets.export_action_icon.add_css_class(action_class);
+        widgets
+            .export_action_title_label
+            .add_css_class(action_class);
         widgets.preview_export_button.set_sensitive(has_frames);
         widgets
             .export_button
@@ -3779,7 +3922,7 @@ impl AppModel {
         )
     }
 
-    fn export_summary_text(&self) -> String {
+    fn export_duration_summary_text(&self) -> String {
         let frame_count = self
             .timeline
             .frames()
@@ -3787,53 +3930,81 @@ impl AppModel {
             .filter(|frame| frame.enabled)
             .count();
         let duration_ms = self.total_duration_ms();
-        let fps = if frame_count > 0 && duration_ms > 0 {
-            format!(
-                "{:.0} fps",
-                frame_count as f64 / (duration_ms as f64 / 1000.0)
-            )
-        } else {
-            "-- fps".to_string()
-        };
-        let loop_count = if self.export_profile.loop_count == 0 {
+        if frame_count == 0 || duration_ms == 0 {
+            return "--".to_string();
+        }
+        let fps = frame_count as f64 / (duration_ms as f64 / 1000.0);
+        format!("{} ({fps:.0} fps)", format_duration_ms(duration_ms))
+    }
+
+    fn export_loop_count_summary_text(&self) -> String {
+        if self.timeline.is_empty() {
+            return "--".to_string();
+        }
+        if self.export_profile.loop_count == 0 {
             "Infinite".to_string()
         } else {
             self.export_profile.loop_count.to_string()
-        };
-        let estimate = self.estimated_file_size_text(frame_count, duration_ms);
-        format!(
-            "Format              Animated WebP\nDimensions          {}\nFrame Count         {} frames\nDuration            {} ({})\nLoop Count          {}\nQuality             {:.0}\nEstimated File Size {}",
-            self.export_dimensions_text(),
-            frame_count,
-            format_duration_ms(duration_ms),
-            fps,
-            loop_count,
-            self.export_profile.quality,
-            estimate
-        )
+        }
     }
 
-    fn export_action_text(&self) -> String {
+    fn export_action_presentation(
+        &self,
+    ) -> (&'static str, &'static str, &'static str, &'static str) {
         if self.export_in_progress {
-            return "Exporting\nYour animated WebP is being created.".to_string();
+            return (
+                "view-refresh-symbolic",
+                "Exporting",
+                "Your animated WebP is being created.",
+                "export-action-info",
+            );
         }
         if self.export_completion_pending {
-            return "Finishing Export\nUpdating the interface after export.".to_string();
+            return (
+                "view-refresh-symbolic",
+                "Finishing Export",
+                "Updating the interface after export.",
+                "export-action-info",
+            );
         }
         if self.timeline.is_empty() {
-            return "No Frames Imported\nImport images before exporting.".to_string();
+            return (
+                "dialog-warning-symbolic",
+                "No Frames Imported",
+                "Import images before exporting.",
+                "export-action-warning",
+            );
         }
         if self.last_output_path.is_none() {
-            return "Missing Output File\nChoose where to save your animated WebP.".to_string();
+            return (
+                "dialog-warning-symbolic",
+                "Missing Output File",
+                "Choose where to save your animated WebP.",
+                "export-action-warning",
+            );
         }
         if self.status.starts_with("Export failed") {
-            return "Export Failed\nOpen Diagnostics for technical details.".to_string();
+            return (
+                "dialog-error-symbolic",
+                "Export Failed",
+                "Open Diagnostics for technical details.",
+                "export-action-error",
+            );
         }
         if self.status.starts_with("Exported ") {
-            return "Export Complete\nYour animated WebP was created.".to_string();
+            return (
+                "emblem-ok-symbolic",
+                "Export Complete",
+                "Your animated WebP was created.",
+                "export-action-success",
+            );
         }
-        "Ready to Export\nEverything looks good. Click export to create your animated WebP."
-            .to_string()
+        (
+            "emblem-ok-symbolic",
+            "Ready to Export",
+            "Everything looks good. Click export to create your animated WebP.",
+            "export-action-success",
+        )
     }
 
     fn estimated_file_size_text(&self, frame_count: usize, duration_ms: u64) -> String {
@@ -3869,21 +4040,6 @@ impl AppModel {
             "{}\n{}",
             self.preview_meta_text(),
             self.loop_method.helper_text()
-        )
-    }
-
-    fn export_preview_meta_text(&self) -> String {
-        let preview_state = if self.export_preview_path.is_some() {
-            "Preview reflects the current export sizing."
-        } else {
-            "Click Preview Export to render with the current export sizing."
-        };
-        format!(
-            "{}\nExport size: {} • fit {}\n{}",
-            self.preview_user_meta_text(),
-            self.export_dimensions_text(),
-            self.export_profile.fit_mode,
-            preview_state
         )
     }
 
@@ -3960,18 +4116,6 @@ impl AppModel {
             frame.transform_spec.fit_mode,
             frame.transform_spec.flip_horizontal,
             frame.transform_spec.flip_vertical
-        )
-    }
-
-    fn preview_user_meta_text(&self) -> String {
-        let Some(frame) = self.primary_selected_frame() else {
-            return "Select a frame to preview it.".to_string();
-        };
-        format!(
-            "{}\nExport dimensions: {}\nFrame duration: {} ms",
-            frame.file_name(),
-            self.export_dimensions_text(),
-            frame.duration_ms
         )
     }
 
@@ -4270,44 +4414,78 @@ fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
     let frame = gtk::Frame::builder().child(child).build();
     frame.add_css_class("content-card");
     frame.add_css_class("section-card");
-    let (icon_name, icon_tone_class) = section_header_icon(title);
-    let header = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(8)
-        .build();
-    header.add_css_class("section-header");
-    let icon = gtk::Image::from_icon_name(icon_name);
-    icon.add_css_class("section-icon");
-    icon.add_css_class(icon_tone_class);
     let label = gtk::Label::new(Some(title));
     label.add_css_class("section-title");
     label.set_xalign(0.0);
-    header.append(&icon);
-    header.append(&label);
-    frame.set_label_widget(Some(&header));
+    frame.set_label_widget(Some(&label));
     frame
 }
 
-fn settings_row<W: IsA<gtk::Widget>>(title: &str, helper: &str, control: &W) -> gtk::Box {
-    let row = gtk::Box::builder()
-        .orientation(gtk::Orientation::Horizontal)
-        .spacing(12)
+fn section_without_header<W: IsA<gtk::Widget>>(child: &W) -> gtk::Frame {
+    let frame = gtk::Frame::builder().child(child).build();
+    frame.add_css_class("content-card");
+    frame.add_css_class("section-card");
+    frame.add_css_class("section-without-header");
+    frame
+}
+
+fn settings_row<W: IsA<gtk::Widget>>(title: &str, helper: &str, control: &W) -> gtk::Grid {
+    settings_row_with_options(title, helper, control, true, false)
+}
+
+fn settings_toggle_row<W: IsA<gtk::Widget>>(title: &str, helper: &str, control: &W) -> gtk::Grid {
+    settings_row_with_options(title, helper, control, false, true)
+}
+
+fn settings_row_with_options<W: IsA<gtk::Widget>>(
+    title: &str,
+    helper: &str,
+    control: &W,
+    control_expands: bool,
+    align_end: bool,
+) -> gtk::Grid {
+    let row = gtk::Grid::builder()
+        .column_spacing(20)
+        .column_homogeneous(true)
         .build();
     row.add_css_class("settings-row");
     let copy = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(3)
+        .spacing(4)
         .hexpand(true)
+        .halign(gtk::Align::Fill)
         .build();
+    copy.add_css_class("settings-copy");
     let title_label = gtk::Label::new(Some(title));
     title_label.set_xalign(0.0);
     title_label.add_css_class("settings-title");
     let helper_label = helper_label(helper);
+    helper_label.set_wrap(true);
+    helper_label.set_wrap_mode(pango::WrapMode::WordChar);
+    helper_label.set_max_width_chars(28);
     copy.append(&title_label);
     copy.append(&helper_label);
-    control.as_ref().set_hexpand(true);
-    row.append(&copy);
-    row.append(control);
+    let control_box = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(0)
+        .hexpand(true)
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Center)
+        .build();
+    control_box.add_css_class("settings-control");
+    control.as_ref().set_hexpand(control_expands);
+    control.as_ref().set_halign(if control_expands {
+        gtk::Align::Fill
+    } else {
+        gtk::Align::End
+    });
+    if align_end {
+        let spacer = gtk::Box::builder().hexpand(true).build();
+        control_box.append(&spacer);
+    }
+    control_box.append(control);
+    row.attach(&copy, 0, 0, 1, 1);
+    row.attach(&control_box, 1, 0, 2, 1);
     row
 }
 
@@ -4405,6 +4583,22 @@ fn summary_label(text: &str) -> gtk::Label {
     label
 }
 
+fn summary_value_label() -> gtk::Label {
+    let label = gtk::Label::new(None);
+    label.set_xalign(1.0);
+    label.set_hexpand(true);
+    label.add_css_class("summary-value");
+    label
+}
+
+fn attach_summary_row(grid: &gtk::Grid, row: i32, label: &str, value: &gtk::Label) {
+    let key = gtk::Label::new(Some(label));
+    key.set_xalign(0.0);
+    key.add_css_class("summary-key");
+    grid.attach(&key, 0, row, 1, 1);
+    grid.attach(value, 1, row, 1, 1);
+}
+
 fn page_heading(title: &str, subtitle: &str) -> gtk::Box {
     let box_widget = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
@@ -4421,29 +4615,6 @@ fn page_heading(title: &str, subtitle: &str) -> gtk::Box {
     box_widget.append(&title_label);
     box_widget.append(&subtitle_label);
     box_widget
-}
-
-fn section_header_icon(title: &str) -> (&'static str, &'static str) {
-    match title {
-        "Preview" => ("view-preview-symbolic", "icon-tone-cyan"),
-        "Quick Actions" => (
-            "preferences-desktop-keyboard-shortcuts-symbolic",
-            "icon-tone-cyan",
-        ),
-        "Guided Crop" => ("image-crop-symbolic", "icon-tone-coral"),
-        "Adjustments" => ("applications-graphics-symbolic", "icon-tone-amber"),
-        "Advanced Edit Controls" => ("preferences-system-symbolic", "icon-tone-amber"),
-        "Source" => ("folder-pictures-symbolic", "icon-tone-cyan"),
-        "Loop Controls" => ("media-playlist-repeat-symbolic", "icon-tone-green"),
-        "Loop Summary" => ("view-list-details-symbolic", "icon-tone-green"),
-        "Export Settings" => ("mail-send-symbolic", "icon-tone-green"),
-        "Export Summary" => ("dialog-information-symbolic", "icon-tone-amber"),
-        "Advanced Export Controls" => ("preferences-system-symbolic", "icon-tone-coral"),
-        "Effective Command" => ("utilities-terminal-symbolic", "icon-tone-coral"),
-        "Health" => ("heart-symbolic", "icon-tone-green"),
-        "Details" => ("text-x-generic-symbolic", "icon-tone-cyan"),
-        _ => ("applications-system-symbolic", "icon-tone-cyan"),
-    }
 }
 
 fn page_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
@@ -4834,15 +5005,12 @@ fn install_app_css(window: &gtk::Window) {
             letter-spacing: 0.02em;
             color: #f4f7fb;
         }
-        .section-icon {
-            -gtk-icon-size: 16px;
-        }
         .workflow-tab,
         .pill-button,
         .choice-card {
             border-radius: 10px;
-            background: #1d2430;
-            border: 1px solid #2c3747;
+            background: #1b2b42;
+            border: 1px solid #3c669e;
         }
         .workflow-tab-active {
             background: transparent;
@@ -4850,6 +5018,10 @@ fn install_app_css(window: &gtk::Window) {
             border-bottom: 3px solid #5a9bff;
             color: #7fb2ff;
             font-weight: 700;
+        }
+        .suggested-action {
+            background: #2d6cdf;
+            border-color: #6fa7ff;
         }
         .pill-button-active,
         .choice-card-active {
@@ -4880,7 +5052,7 @@ fn install_app_css(window: &gtk::Window) {
         }
         .button-leading-icon {
             -gtk-icon-size: 18px;
-            color: #b8c5d6;
+            color: #8cc3ff;
         }
         .choice-card-icon {
             -gtk-icon-size: 38px;
@@ -4908,13 +5080,63 @@ fn install_app_css(window: &gtk::Window) {
             border-radius: 10px;
             background: #10151c;
         }
+        .export-preview-fixed {
+            min-height: 225px;
+            max-height: 225px;
+        }
+        .export-summary-action-row {
+            margin-top: 2px;
+        }
         .settings-row {
-            padding: 10px 0;
+            padding: 12px 0;
             border-bottom: 1px solid rgba(91, 115, 150, 0.18);
+        }
+        .settings-copy {
+            margin-top: 0;
+            margin-bottom: 0;
+        }
+        .settings-control {
+            min-width: 0;
         }
         .settings-title {
             font-weight: 700;
             color: #f2f6fb;
+        }
+        .control-surface,
+        entry,
+        spinbutton,
+        combobox,
+        switch {
+            color: #eaf2ff;
+        }
+        entry,
+        spinbutton,
+        combobox box button,
+        combobox box.linked button,
+        switch {
+            background: #16263b;
+            border: 1px solid #3c669e;
+        }
+        scale trough {
+            background: #16263b;
+            border: 1px solid #3c669e;
+            min-height: 8px;
+            border-radius: 999px;
+        }
+        scale highlight {
+            background: #5a9bff;
+            border-radius: 999px;
+        }
+        scale slider {
+            background: #eef5ff;
+            border: 1px solid #5a9bff;
+        }
+        switch:checked {
+            background: #2d6cdf;
+            border-color: #6fa7ff;
+        }
+        switch slider {
+            background: #eef5ff;
         }
         .combined-input entry {
             border-top-right-radius: 0;
@@ -4926,6 +5148,8 @@ fn install_app_css(window: &gtk::Window) {
         }
         .menu-action {
             border-radius: 10px;
+            background: #1b2b42;
+            border: 1px solid #3c669e;
         }
         .dim-label {
             color: #9da9ba;
@@ -4936,6 +5160,41 @@ fn install_app_css(window: &gtk::Window) {
             border-radius: 10px;
             padding: 12px 14px;
             color: #cfd9e7;
+        }
+        .summary-key {
+            color: #9da9ba;
+        }
+        .summary-value {
+            color: #f2f6fb;
+            font-weight: 600;
+        }
+        .export-summary-grid {
+            margin-top: 2px;
+        }
+        .section-without-header {
+            padding-top: 4px;
+        }
+        .export-action-title {
+            font-size: 18px;
+            font-weight: 800;
+        }
+        .export-action-detail {
+            color: #c8d7ea;
+        }
+        .export-action-icon {
+            -gtk-icon-size: 22px;
+        }
+        .export-action-info {
+            color: #7fb2ff;
+        }
+        .export-action-success {
+            color: #67dc8b;
+        }
+        .export-action-warning {
+            color: #ffbf57;
+        }
+        .export-action-error {
+            color: #ff8b7a;
         }
         .status-pill {
             background: #1a5c35;
