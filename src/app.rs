@@ -511,6 +511,7 @@ impl Component for AppModel {
         window: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        window.add_css_class("app-window");
         install_app_css(&window);
         let cache_dir = ensure_cache_dir().unwrap_or_else(|_| std::env::temp_dir());
         let diagnostics = collect_diagnostics();
@@ -5373,6 +5374,10 @@ fn install_app_css(window: &gtk::Window) {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(
         "
+        window.app-window,
+        .app-window {
+            background: #11161d;
+        }
         .app-shell {
             background: #11161d;
             color: #ecf1f8;
