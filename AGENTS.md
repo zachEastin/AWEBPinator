@@ -48,6 +48,15 @@ That is useful for confirming startup regressions without leaving a GTK process 
 
 Do not treat `cargo test` alone as sufficient for UI changes.
 
+Use the local-first GUI testing ladder:
+
+- Tier 0 logic checks: `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings`
+- Tier 1 GTK startup smoke: `cargo build` and `timeout 5s cargo run`
+- Tier 2 manual GUI checklist: import, selection, drag/drop, reorder, preview, transform, loop, export, save/load
+- Tier 3 optional local AT-SPI smoke: `python3 tests/gui/smoke.py`
+
+Tier 3 requires a graphical session plus Fedora packages `python3-dogtail` and `at-spi2-core`. It is not part of normal `cargo test`.
+
 If you change any of the following, you should run the app at least briefly:
 - GTK layout
 - selection behavior
@@ -77,6 +86,19 @@ If the change is specifically visual or interaction-heavy, prefer a real interac
 - Reordering is intended to happen by dragging the tile itself
 
 When editing the timeline UI, preserve that interaction model unless the user explicitly asks to change it.
+
+## Accessibility And Test Handles
+
+- Keep important controls discoverable by stable accessible labels.
+- Icon-only buttons should have accessible labels matching their tooltip/action.
+- Major controls should keep human-readable labels for AT-SPI/Dogtail smoke tests:
+  - import/open/save
+  - workflow tabs
+  - Advanced mode
+  - export output path and export action
+  - transport controls
+  - timeline edit controls
+- Timeline tiles should keep deterministic accessible labels in the form `Frame 001 filename.png`.
 
 ## Repo-Specific Notes
 

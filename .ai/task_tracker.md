@@ -11,6 +11,42 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-23 - Implement local-first GUI testing strategy
+
+- Status: Done
+- Request: Implement the local-first GUI testing strategy with docs, accessibility/test handles, and a small future Dogtail smoke-test scaffold.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `.ai/workflows.md`, `.ai/repo_overview.md`, `.ai/architecture.md`, `README.md`, `AGENTS.md`, `Cargo.toml`, `src/app.rs`, local GTK Rust accessible APIs
+- Files changed: `.ai/task_tracker.md`, `.ai/workflows.md`, `AGENTS.md`, `README.md`, `src/app.rs`, `tests/gui/smoke.py`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`, `python3 tests/gui/smoke.py`
+- Notes: Added local-first GUI testing docs, stable accessible labels for core controls/timeline tiles, and an optional Dogtail smoke scaffold. The Dogtail smoke script currently exits with the documented missing-dependency message because `python3-dogtail` is not installed locally.
+
+### 2026-04-23 - Restore allocated-size preview rendering
+
+- Status: Done
+- Request: Higher-res previews still appear as low-res proxies; restore the caching/rendering behavior that worked before commit `6c1a34074443ab3a936981b4015a2b21dffc5572`.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`, `src/types.rs`, `git show 6c1a34074443ab3a936981b4015a2b21dffc5572^:src/app.rs`, `git show 6c1a34074443ab3a936981b4015a2b21dffc5572^:src/thumbnail.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: The size-keyed preview cache/render path existed before the redesign and is still used. The fix makes the redesigned preview layout watcher stateful and adds a GTK tick fallback so renders are queued from the actual allocated preview widget size after layout settles, instead of leaving a smaller requested-size cache stretched across the visible panel.
+
+### 2026-04-23 - Keep higher-resolution previews visible
+
+- Status: Done
+- Request: Fix higher-res previews not displaying while playing or paused; only the lower-res proxy appears visible.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`, `src/types.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Existing rendered previews now stay visible for the current frame while a new exact-size render is pending, even after playback or workflow-tab layout changes clear the recorded render size. Thumbnail/source proxies are only used when there is no rendered preview to keep.
+
+### 2026-04-23 - Fix preview proxy-to-render handoff
+
+- Status: Done
+- Request: Fix still preview and playback preview so the visible proxy image does not disappear when the app switches to the rendered higher-resolution preview.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: Preview fallback now stays on the generated thumbnail proxy until a rendered preview file is confirmed to exist, and async preview completions no longer replace a working proxy with `None` or a missing path. The higher-resolution handoff now accepts any valid render for the currently selected frame, even if layout resizing made the target size drift slightly while that render was in flight, and it automatically queues a larger rerender if the accepted image still undershoots the latest target size.
+
 ### 2026-04-23 - Polish section headers and summary cards
 
 - Status: Done

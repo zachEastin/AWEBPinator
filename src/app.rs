@@ -1,5 +1,7 @@
+use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use crate::export::{build_command_preview, export_animation};
@@ -14,7 +16,7 @@ use crate::thumbnail::{
 use crate::timeline::Timeline;
 use crate::types::{
     CropRect, EncoderPreset, ExportJob, ExportPreset, ExportProfile, FitMode, FrameItem,
-    ProjectDocument, ResizeTarget, TransformSpec,
+    ProjectDocument, ResizeTarget,
 };
 use gtk::glib::clone;
 use gtk::prelude::*;
@@ -530,6 +532,7 @@ impl Component for AppModel {
         let advanced_label = gtk::Label::new(Some("Advanced"));
         advanced_label.set_xalign(1.0);
         let advanced_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+        set_accessible_label(&advanced_switch, "Advanced mode");
         advanced_box.append(&advanced_label);
         advanced_box.append(&advanced_switch);
 
@@ -587,6 +590,7 @@ impl Component for AppModel {
             .vexpand(true)
             .build();
         let preview_picture = gtk::Picture::new();
+        set_accessible_label(&preview_picture, "Selected frame preview");
         preview_picture.set_size_request(760, 440);
         preview_picture.set_can_shrink(true);
         preview_picture.set_hexpand(true);
@@ -730,6 +734,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let quick_resize_combo = combo_for_dimension_preset();
+        set_accessible_label(&quick_resize_combo, "Quick resize preset");
         let quick_apply_button = build_labeled_button(
             "Apply to Selected Frames",
             "emblem-ok-symbolic",
@@ -744,6 +749,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let edit_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
+        set_accessible_label(&edit_duration_spin, "Frame duration");
         edit_duration_spin.set_value(100.0);
         let edit_duration_button = build_labeled_button(
             "Set Duration",
@@ -784,6 +790,13 @@ impl Component for AppModel {
         let resize_w = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
         let resize_h = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
         let inspector_fit_combo = combo_for_fit_mode();
+        set_accessible_label(&crop_x, "Crop X");
+        set_accessible_label(&crop_y, "Crop Y");
+        set_accessible_label(&crop_w, "Crop width");
+        set_accessible_label(&crop_h, "Crop height");
+        set_accessible_label(&resize_w, "Resize width");
+        set_accessible_label(&resize_h, "Resize height");
+        set_accessible_label(&inspector_fit_combo, "Edit fit mode");
         let apply_transform_button = build_labeled_button(
             "Apply to Selected Frames",
             "emblem-ok-symbolic",
@@ -874,6 +887,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let loop_repeats_spin = gtk::SpinButton::with_range(1.0, 32.0, 1.0);
+        set_accessible_label(&loop_repeats_spin, "Loop repeats");
         loop_repeats_spin.set_value(1.0);
         loop_repeats_row.append(&gtk::Label::new(Some("Repeats")));
         loop_repeats_row.append(&loop_repeats_spin);
@@ -909,6 +923,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let loop_preview_picture = gtk::Picture::new();
+        set_accessible_label(&loop_preview_picture, "Loop preview");
         loop_preview_picture.set_size_request(560, 320);
         loop_preview_picture.set_can_shrink(true);
         loop_preview_picture.set_hexpand(true);
@@ -993,6 +1008,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let output_entry = gtk::Entry::new();
+        set_accessible_label(&output_entry, "Export output path");
         output_entry.set_placeholder_text(Some("/path/to/output.webp"));
         let browse_output_button =
             build_labeled_button("Browse", "folder-open-symbolic", "icon-tone-cyan");
@@ -1000,17 +1016,27 @@ impl Component for AppModel {
         let width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
         let height_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
         let quality_spin = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
+        set_accessible_label(&export_size_combo, "Export size preset");
+        set_accessible_label(&width_spin, "Export width");
+        set_accessible_label(&height_spin, "Export height");
+        set_accessible_label(&quality_spin, "Export quality");
         quality_spin.set_value(75.0);
         let lossless_check = gtk::CheckButton::with_label("Lossless");
         let encoder_combo = combo_for_encoder_preset();
         let cr_threshold_spin = gtk::SpinButton::with_range(0.0, 1024.0, 1.0);
         let cr_size_spin = gtk::SpinButton::with_range(0.0, 256.0, 1.0);
+        set_accessible_label(&encoder_combo, "Encoder preset");
+        set_accessible_label(&cr_threshold_spin, "Conditional replenishment threshold");
+        set_accessible_label(&cr_size_spin, "Conditional replenishment block size");
         cr_size_spin.set_value(16.0);
         let loop_spin = gtk::SpinButton::with_range(0.0, 9999.0, 1.0);
+        set_accessible_label(&loop_spin, "Export loop count");
         let overwrite_check = gtk::CheckButton::with_label("Overwrite");
         overwrite_check.set_active(true);
         let fit_mode_combo = combo_for_fit_mode();
         let raw_args_entry = gtk::Entry::new();
+        set_accessible_label(&fit_mode_combo, "Export fit mode");
+        set_accessible_label(&raw_args_entry, "Advanced ffmpeg arguments");
         raw_args_entry.set_placeholder_text(Some("-metadata title='Animated export'"));
         let export_button = build_labeled_button(
             "Export Animated WebP",
@@ -1055,6 +1081,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let export_preview_picture = gtk::Picture::new();
+        set_accessible_label(&export_preview_picture, "Export preview");
         export_preview_picture.set_size_request(560, 320);
         export_preview_picture.set_can_shrink(true);
         export_preview_picture.set_hexpand(true);
@@ -1155,6 +1182,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let batch_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
+        set_accessible_label(&batch_duration_spin, "Timeline batch duration");
         batch_duration_spin.set_value(100.0);
         let batch_duration_button = build_labeled_button(
             "Set Duration",
@@ -2292,15 +2320,18 @@ impl Component for AppModel {
                 preview_path,
                 error,
             } => {
-                if preview_result_is_usable(
-                    self.primary_selected_id(),
-                    self.preview_target_size,
-                    frame_id,
-                    render_size,
-                ) {
+                if preview_result_is_usable(self.primary_selected_id(), frame_id) {
                     self.preview_frame_id = Some(frame_id);
-                    self.preview_rendered_size = Some(render_size);
-                    self.preview_path = preview_path;
+                    if let Some(preview_path) = usable_preview_path(preview_path) {
+                        self.preview_rendered_size = Some(render_size);
+                        self.preview_path = Some(preview_path);
+                        if should_refresh_preview(
+                            self.preview_rendered_size,
+                            self.preview_target_size,
+                        ) {
+                            self.queue_preview_for_primary_selection(&sender);
+                        }
+                    }
                 }
                 if let Some(error) = error {
                     self.status = format!("Preview failed for frame {frame_id}: {error}");
@@ -2315,8 +2346,9 @@ impl Component for AppModel {
             } => {
                 if generation == self.export_preview_generation
                     && self.primary_selected_id() == Some(frame_id)
+                    && let Some(preview_path) = usable_preview_path(preview_path)
                 {
-                    self.export_preview_path = preview_path;
+                    self.export_preview_path = Some(preview_path);
                     self.export_preview_rendered_size = Some(render_size);
                 }
                 if let Some(error) = error {
@@ -2885,12 +2917,14 @@ impl AppModel {
             self.preview_path = Some(cached_preview_path);
             self.preview_rendered_size = Some(render_size);
         } else {
-            let fallback_path = immediate_preview_path(
-                &frame,
-                None,
-                self.preview_path.as_ref(),
-                self.playback_active,
-            );
+            let current_preview_path = same_frame
+                .then_some(self.preview_path.as_ref())
+                .flatten()
+                .filter(|path| {
+                    self.preview_rendered_size.is_some() || !preview_path_is_proxy(&frame, path)
+                });
+            let fallback_path =
+                immediate_preview_path(&frame, None, current_preview_path, self.playback_active);
             if !same_frame || self.preview_path.as_ref() != Some(&fallback_path) {
                 self.preview_path = Some(fallback_path);
             }
@@ -3418,6 +3452,10 @@ fn build_timeline_tile(
         .margin_end(6)
         .width_request(132)
         .build();
+    set_accessible_label(
+        &tile,
+        &format!("Frame {:03} {}", index + 1, frame.file_name()),
+    );
     tile.add_css_class("timeline-tile");
     if selected {
         tile.add_css_class("timeline-tile-selected");
@@ -3632,6 +3670,7 @@ fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
 fn build_tab_button(label: &str, icon_name: &str, icon_tone_class: &str) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("workflow-tab");
+    set_accessible_label(&button, &format!("{label} workflow tab"));
     button.set_child(Some(&button_label_content(
         label,
         icon_name,
@@ -3648,6 +3687,7 @@ fn build_choice_button(
 ) -> gtk::Button {
     let button = gtk::Button::new();
     button.add_css_class("choice-card");
+    set_accessible_label(&button, title);
     let content = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
         .spacing(12)
@@ -3683,6 +3723,7 @@ fn build_choice_button(
 
 fn build_labeled_button(label: &str, icon_name: &str, icon_tone_class: &str) -> gtk::Button {
     let button = gtk::Button::new();
+    set_accessible_label(&button, label);
     button.set_child(Some(&button_label_content(
         label,
         icon_name,
@@ -3804,7 +3845,12 @@ fn build_icon_button(icon_name: &str, tooltip: &str) -> gtk::Button {
     button.add_css_class("pill-button");
     set_button_icon(&button, icon_name);
     button.set_tooltip_text(Some(tooltip));
+    set_accessible_label(&button, tooltip);
     button
+}
+
+fn set_accessible_label(widget: &impl IsA<gtk::Accessible>, label: &str) {
+    widget.update_property(&[gtk::accessible::Property::Label(label)]);
 }
 
 fn install_window_layout_watch(window: &gtk::Window, sender: ComponentSender<AppModel>) {
@@ -3828,23 +3874,23 @@ fn install_preview_layout_watch(
     tab: WorkflowTab,
     sender: ComponentSender<AppModel>,
 ) {
+    let last_size = Rc::new(Cell::new(None));
+
     preview_picture.connect_map(clone!(
         #[strong]
         sender,
-        move |picture| sender.input(AppMsg::PreviewLayoutChanged {
-            tab,
-            size: preview_render_size_for_widget(picture),
-        })
+        #[strong]
+        last_size,
+        move |picture| send_preview_layout_change(picture, tab, &sender, &last_size)
     ));
     preview_picture.connect_notify_local(
         Some("width"),
         clone!(
             #[strong]
             sender,
-            move |picture, _| sender.input(AppMsg::PreviewLayoutChanged {
-                tab,
-                size: preview_render_size_for_widget(picture),
-            })
+            #[strong]
+            last_size,
+            move |picture, _| send_preview_layout_change(picture, tab, &sender, &last_size)
         ),
     );
     preview_picture.connect_notify_local(
@@ -3852,10 +3898,9 @@ fn install_preview_layout_watch(
         clone!(
             #[strong]
             sender,
-            move |picture, _| sender.input(AppMsg::PreviewLayoutChanged {
-                tab,
-                size: preview_render_size_for_widget(picture),
-            })
+            #[strong]
+            last_size,
+            move |picture, _| send_preview_layout_change(picture, tab, &sender, &last_size)
         ),
     );
     preview_picture.connect_notify_local(
@@ -3863,16 +3908,38 @@ fn install_preview_layout_watch(
         clone!(
             #[strong]
             sender,
-            move |picture, _| sender.input(AppMsg::PreviewLayoutChanged {
-                tab,
-                size: preview_render_size_for_widget(picture),
-            })
+            #[strong]
+            last_size,
+            move |picture, _| send_preview_layout_change(picture, tab, &sender, &last_size)
         ),
     );
+    preview_picture.add_tick_callback(clone!(
+        #[strong]
+        sender,
+        #[strong]
+        last_size,
+        move |picture, _| {
+            send_preview_layout_change(picture, tab, &sender, &last_size);
+            gtk::glib::ControlFlow::Continue
+        }
+    ));
 }
 
 fn set_button_icon(button: &gtk::Button, icon_name: &str) {
     button.set_child(Some(&gtk::Image::from_icon_name(icon_name)));
+}
+
+fn send_preview_layout_change(
+    widget: &impl IsA<gtk::Widget>,
+    tab: WorkflowTab,
+    sender: &ComponentSender<AppModel>,
+    last_size: &Cell<Option<PreviewRenderSize>>,
+) {
+    let size = preview_render_size_for_widget(widget);
+    if last_size.get() != Some(size) {
+        last_size.set(Some(size));
+        sender.input(AppMsg::PreviewLayoutChanged { tab, size });
+    }
 }
 
 fn preview_render_size_for_widget(widget: &impl IsA<gtk::Widget>) -> PreviewRenderSize {
@@ -4492,25 +4559,33 @@ fn immediate_preview_path(
     frame: &FrameItem,
     cached_preview_path: Option<PathBuf>,
     current_preview_path: Option<&PathBuf>,
-    playback_active: bool,
+    _playback_active: bool,
 ) -> PathBuf {
     if let Some(cached_preview_path) = cached_preview_path {
         return cached_preview_path;
     }
 
-    if playback_active {
-        if frame.transform_spec != TransformSpec::default()
-            && let Some(current_preview_path) = current_preview_path
-        {
-            return current_preview_path.clone();
-        }
-        return frame.source_path.clone();
+    if let Some(current_preview_path) = current_preview_path {
+        return current_preview_path.clone();
     }
 
-    frame
-        .thumbnail_path
-        .clone()
-        .unwrap_or_else(|| frame.source_path.clone())
+    if let Some(thumbnail_path) = frame.thumbnail_path.clone() {
+        return thumbnail_path;
+    }
+
+    frame.source_path.clone()
+}
+
+fn usable_preview_path(preview_path: Option<PathBuf>) -> Option<PathBuf> {
+    preview_path.filter(|path| path.is_file())
+}
+
+fn preview_path_is_proxy(frame: &FrameItem, path: &Path) -> bool {
+    path == frame.source_path
+        || frame
+            .thumbnail_path
+            .as_ref()
+            .is_some_and(|thumbnail_path| path == thumbnail_path)
 }
 
 fn should_refresh_preview(
@@ -4520,13 +4595,8 @@ fn should_refresh_preview(
     rendered_size.is_none_or(|rendered_size| !rendered_size.covers(target_size))
 }
 
-fn preview_result_is_usable(
-    current_frame_id: Option<u64>,
-    target_size: PreviewRenderSize,
-    frame_id: u64,
-    render_size: PreviewRenderSize,
-) -> bool {
-    current_frame_id == Some(frame_id) && render_size.covers(target_size)
+fn preview_result_is_usable(current_frame_id: Option<u64>, frame_id: u64) -> bool {
+    current_frame_id == Some(frame_id)
 }
 
 fn step_frame_id(frame_ids: &[u64], current: Option<u64>, offset: isize) -> Option<u64> {
@@ -4584,7 +4654,7 @@ mod tests {
     use super::{
         CropAnchor, CropPreset, PreviewRenderSize, crop_rect_for_frame, following_frame_id,
         immediate_preview_path, playback_start_frame_id, preview_render_size_from_values,
-        preview_result_is_usable, should_refresh_preview, step_frame_id,
+        preview_result_is_usable, should_refresh_preview, step_frame_id, usable_preview_path,
     };
     use crate::types::{CropRect, FitMode, FrameItem, TransformSpec};
 
@@ -4660,7 +4730,53 @@ mod tests {
     }
 
     #[test]
-    fn immediate_preview_uses_source_during_playback() {
+    fn immediate_preview_keeps_current_render_before_proxy() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(
+                &frame,
+                None,
+                Some(&PathBuf::from("existing-preview.png")),
+                false,
+            ),
+            PathBuf::from("existing-preview.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_keeps_current_render_during_playback() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(
+                &frame,
+                None,
+                Some(&PathBuf::from("existing-preview.png")),
+                true,
+            ),
+            PathBuf::from("existing-preview.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_uses_thumbnail_during_playback() {
         let frame = FrameItem {
             id: 1,
             source_path: PathBuf::from("source.png"),
@@ -4673,12 +4789,30 @@ mod tests {
 
         assert_eq!(
             immediate_preview_path(&frame, None, None, true),
+            PathBuf::from("thumb.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_falls_back_to_source_when_thumbnail_is_unavailable() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: None,
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(&frame, None, None, true),
             PathBuf::from("source.png")
         );
     }
 
     #[test]
-    fn immediate_preview_keeps_existing_preview_for_transformed_playback_frame() {
+    fn immediate_preview_keeps_current_render_for_transformed_playback_frame() {
         let frame = FrameItem {
             id: 1,
             source_path: PathBuf::from("source.png"),
@@ -4692,6 +4826,36 @@ mod tests {
                 fit_mode: FitMode::Contain,
             },
             thumbnail_path: Some(PathBuf::from("thumb.png")),
+            enabled: true,
+            source_dimensions: None,
+        };
+
+        assert_eq!(
+            immediate_preview_path(
+                &frame,
+                None,
+                Some(&PathBuf::from("existing-preview.png")),
+                true,
+            ),
+            PathBuf::from("existing-preview.png")
+        );
+    }
+
+    #[test]
+    fn immediate_preview_keeps_existing_preview_for_transformed_playback_without_thumbnail() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec {
+                rotate_quarter_turns: 1,
+                flip_horizontal: false,
+                flip_vertical: false,
+                crop: None,
+                resize: None,
+                fit_mode: FitMode::Contain,
+            },
+            thumbnail_path: None,
             enabled: true,
             source_dimensions: None,
         };
@@ -4766,42 +4930,17 @@ mod tests {
 
     #[test]
     fn preview_result_is_usable_only_for_current_frame_and_target() {
-        assert!(preview_result_is_usable(
-            Some(5),
-            PreviewRenderSize {
-                width: 720,
-                height: 360
-            },
-            5,
-            PreviewRenderSize {
-                width: 1440,
-                height: 720
-            },
-        ));
-        assert!(!preview_result_is_usable(
-            Some(5),
-            PreviewRenderSize {
-                width: 1080,
-                height: 720
-            },
-            5,
-            PreviewRenderSize {
-                width: 720,
-                height: 360
-            },
-        ));
-        assert!(!preview_result_is_usable(
-            Some(5),
-            PreviewRenderSize {
-                width: 720,
-                height: 360
-            },
-            6,
-            PreviewRenderSize {
-                width: 1440,
-                height: 720
-            },
-        ));
+        assert!(preview_result_is_usable(Some(5), 5));
+        assert!(!preview_result_is_usable(Some(5), 6));
+        assert!(!preview_result_is_usable(None, 5));
+    }
+
+    #[test]
+    fn usable_preview_path_rejects_missing_files() {
+        assert_eq!(
+            usable_preview_path(Some(PathBuf::from("definitely-missing-preview.png"))),
+            None
+        );
     }
 
     #[test]

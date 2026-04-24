@@ -72,30 +72,39 @@ Run linting with Clippy:
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+## GUI Testing Strategy
+
+AWEBPinator uses a local-first GUI testing ladder:
+
+| Tier | Purpose | Command or method |
+| --- | --- | --- |
+| 0 | Fast logic checks for model/export/project behavior | `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings` |
+| 1 | GTK startup smoke check | `cargo build` then `timeout 5s cargo run` |
+| 2 | Human validation of visible workflows | follow the manual checklist below |
+| 3 | Optional local AT-SPI smoke automation | `python3 tests/gui/smoke.py` after `cargo build` |
+
+The optional AT-SPI smoke script is not part of `cargo test` because it needs a running graphical session. On Fedora, install the local automation dependencies with:
+
+```bash
+sudo dnf install python3-dogtail at-spi2-core
+```
+
+The first automated smoke is intentionally small: it launches the app, confirms the main window and key accessible controls are discoverable, then closes the app. Use it as a supplement to the manual checklist, not a replacement for visual review.
+
 ## Manual Test Checklist
 
 Use this when validating the app locally after a change.
 
-1. Start the app with `cargo run`.
-2. Import a handful of `.png` or `.jpg` files through the file picker.
-3. Drag image files from the file manager into the timeline and confirm they import.
-4. Select one or more frames and verify:
-   - duration changes apply
-   - duplicate, copy/paste, and remove work
-   - move up/down works
-   - drag reorder works
-5. In the selection editor, verify:
-   - rotate left/right works
-   - flip horizontal/vertical works
-   - crop/resize numeric fields update the selected-frame preview
-6. Confirm the selected-frame preview updates after selection changes and transform edits.
-7. Use the loop actions:
-   - loop duplicate
-   - loop reverse
-   - ping-pong
-8. Set an output path and export an animated WebP.
-9. Verify the exported file exists and opens in an image viewer/browser that supports animated WebP.
-10. Save a project, reopen it, and confirm the timeline, durations, and export settings are restored.
+1. **Launch**: Start the app with `cargo run`; expect the AWEBPinator window to open without GTK/display errors.
+2. **Import**: Import three small `.png` or `.jpg` files through the file picker; expect three timeline tiles and a selected-frame preview.
+3. **Drag/drop**: Drag image files from the file manager into the timeline; expect the app to offer append, prepend, or replace when frames already exist.
+4. **Selection**: Select one frame, Ctrl-select multiple frames, and Shift-select a range; expect the selected timeline tiles to show the full blue selected background.
+5. **Timeline edits**: Verify duration changes, duplicate, copy/paste, remove, move up/down, and drag reorder; expect the timeline order and selection state to remain coherent.
+6. **Preview and transforms**: Rotate, flip, crop, resize, and change fit mode; expect the selected-frame preview to update after each edit.
+7. **Workflow tabs**: Visit Edit, Loop, Export, and Diagnostics; expect each tab to show its controls without overlapping or clipped text.
+8. **Loop actions**: Run duplicate, reverse, and ping-pong loop actions; expect the timeline to update according to the selected loop source.
+9. **Export**: Set an output path and export an animated WebP; expect the output file to exist and open in an image viewer/browser that supports animated WebP.
+10. **Project persistence**: Save a project, reopen it, and confirm frames, order, durations, transforms, and export settings are restored.
 
 ## VS Code
 
