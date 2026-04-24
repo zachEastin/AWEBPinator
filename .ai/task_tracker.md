@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Rework footer into active-tab contextual status bar
+
+- Status: Done
+- Request: Replace the footer's idle progress bar state with a single-row, active-tab-aware contextual summary that keeps global frame/duration metrics and readiness state while showing scoped action results and tab-specific summaries.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/types.rs`, `README.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `git diff --check`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Added a scoped footer status model in `src/app.rs`, converted the footer center slot into a single-line contextual summary per active tab, and restricted the footer progress bar to export/finalization states. `timeout 5s cargo run` launched `target/debug/awebpinator` but exited early with code `0` instead of timeout code `124`, so it was treated as an inconclusive GTK smoke check rather than a pass.
+
 ### 2026-04-24 - Make Timeline sections collapsible and split evenly
 
 - Status: Done

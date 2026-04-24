@@ -198,6 +198,41 @@ impl WorkflowTab {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FooterStatusScope {
+    Global,
+    Organize,
+    Edit,
+    Loop,
+    Export,
+    Diagnostics,
+}
+
+impl FooterStatusScope {
+    fn matches_tab(self, tab: WorkflowTab) -> bool {
+        match self {
+            Self::Global => false,
+            Self::Organize => tab == WorkflowTab::Organize,
+            Self::Edit => tab == WorkflowTab::Edit,
+            Self::Loop => tab == WorkflowTab::Loop,
+            Self::Export => tab == WorkflowTab::Export,
+            Self::Diagnostics => tab == WorkflowTab::Diagnostics,
+        }
+    }
+}
+
+impl From<WorkflowTab> for FooterStatusScope {
+    fn from(tab: WorkflowTab) -> Self {
+        match tab {
+            WorkflowTab::Organize => Self::Organize,
+            WorkflowTab::Edit => Self::Edit,
+            WorkflowTab::Loop => Self::Loop,
+            WorkflowTab::Export => Self::Export,
+            WorkflowTab::Diagnostics => Self::Diagnostics,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopMethod {
     Duplicate,
     Reverse,
@@ -324,6 +359,7 @@ pub struct AppModel {
     export_profile: ExportProfile,
     diagnostics: Diagnostics,
     status: String,
+    footer_status_scope: FooterStatusScope,
     ui_preferences: UiPreferences,
     layout_mode: LayoutMode,
     active_tab: WorkflowTab,
@@ -498,6 +534,7 @@ impl Component for AppModel {
             export_profile: ExportProfile::default(),
             diagnostics,
             status,
+            footer_status_scope: FooterStatusScope::Global,
             ui_preferences: ui_preferences.clone(),
             layout_mode: layout_mode_for_width(1280),
             active_tab: WorkflowTab::Organize,
@@ -532,13 +569,19 @@ impl Component for AppModel {
         let restored_frame_ids = match load_autosave_project() {
             Ok(Some(document)) => {
                 let ids = model.apply_project_document(document);
-                model.status = format!("Restored autosaved project with {} frame(s).", ids.len());
+                model.set_status(
+                    FooterStatusScope::Global,
+                    format!("Restored autosaved project with {} frame(s).", ids.len()),
+                );
                 ids
             }
             Ok(None) => Vec::new(),
             Err(err) => {
-                model.status = format!(
-                    "Import images to begin building an animated WebP. Autosave could not be loaded: {err}"
+                model.set_status(
+                    FooterStatusScope::Global,
+                    format!(
+                        "Import images to begin building an animated WebP. Autosave could not be loaded: {err}"
+                    ),
                 );
                 Vec::new()
             }
@@ -1125,7 +1168,7 @@ impl Component for AppModel {
             &timeline_order_actions,
             false,
         ));
-        
+
         // Left Side
         let loop_right = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1608,12 +1651,16 @@ impl Component for AppModel {
         let footer_progress_bar = gtk::ProgressBar::builder()
             .hexpand(true)
             .show_text(true)
-            .visible(true)
+            .visible(false)
             .valign(gtk::Align::Center)
             .build();
         let status_label = gtk::Label::new(None);
-        status_label.set_xalign(1.0);
-        status_label.set_wrap(true);
+        status_label.set_xalign(0.0);
+        status_label.set_hexpand(true);
+        status_label.set_halign(gtk::Align::Fill);
+        status_label.set_wrap(false);
+        status_label.set_single_line_mode(true);
+        status_label.set_ellipsize(pango::EllipsizeMode::End);
         status_label.add_css_class("dim-label");
         let footer_state_label = gtk::Label::new(Some("Ready"));
         footer_state_label.set_xalign(1.0);
@@ -2291,7 +2338,10 @@ impl Component for AppModel {
             AppMsg::ImportPaths(paths) => {
                 let valid = filter_image_paths(paths);
                 if valid.is_empty() {
-                    self.status = "No supported image files were provided.".to_string();
+                    self.set_status(
+                        FooterStatusScope::Organize,
+                        "No supported image files were provided.",
+                    );
                 } else if self.timeline.is_empty() {
                     self.import_paths(valid, ImportMode::Append, &sender);
                 } else {
@@ -2309,13 +2359,14 @@ impl Component for AppModel {
                 self.preview_rendered_size = None;
             }
             AppMsg::SetAdvancedMode(enabled) => {
-                self.status = if let Err(err) = self.set_advanced_mode(enabled) {
+                let status = if let Err(err) = self.set_advanced_mode(enabled) {
                     err
                 } else if enabled {
                     "Advanced controls are visible.".to_string()
                 } else {
                     "Advanced controls are hidden.".to_string()
                 };
+                self.set_status(FooterStatusScope::from(self.active_tab), status);
             }
             AppMsg::PreviewLayoutChanged { tab, size } => {
                 if tab == self.active_tab && size != self.preview_target_size {
@@ -2332,7 +2383,7 @@ impl Component for AppModel {
             }
             AppMsg::RunDiagnostics => {
                 self.diagnostics = collect_diagnostics();
-                self.status = "Diagnostics refreshed.".to_string();
+                self.set_status(FooterStatusScope::Diagnostics, "Diagnostics refreshed.");
             }
             AppMsg::PreviewExport => {
                 self.invalidate_export_preview();
@@ -2351,7 +2402,7 @@ impl Component for AppModel {
                     } else {
                         self.playback_active = false;
                         self.playback_generation = self.playback_generation.wrapping_add(1);
-                        self.status = "Playback finished.".to_string();
+                        self.set_status(FooterStatusScope::Global, "Playback finished.");
                     }
                 }
             }
@@ -2386,7 +2437,10 @@ impl Component for AppModel {
             AppMsg::ApplyBatchDuration(duration) => {
                 self.timeline
                     .apply_duration(&self.selection, duration.max(10));
-                self.status = format!("Applied {} ms to selected frames.", duration.max(10));
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Applied {} ms to selected frames.", duration.max(10)),
+                );
             }
             AppMsg::MoveSelectionUp => {
                 self.stop_playback(None);
@@ -2402,7 +2456,7 @@ impl Component for AppModel {
             } => {
                 self.stop_playback(None);
                 if self.timeline.move_frame_to_index(dragged_id, target_index) {
-                    self.status = "Reordered frame.".to_string();
+                    self.set_status(FooterStatusScope::Organize, "Reordered frame.");
                 }
             }
             AppMsg::DuplicateSelection => {
@@ -2410,7 +2464,10 @@ impl Component for AppModel {
                 let inserted = self.timeline.duplicate_selected(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
-                self.status = format!("Duplicated {} frame(s).", inserted.len());
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Duplicated {} frame(s).", inserted.len()),
+                );
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
             }
@@ -2422,7 +2479,10 @@ impl Component for AppModel {
                     .filter(|frame| self.selection.contains(&frame.id))
                     .cloned()
                     .collect();
-                self.status = format!("Copied {} frame(s).", self.clipboard.len());
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Copied {} frame(s).", self.clipboard.len()),
+                );
             }
             AppMsg::PasteClipboard => {
                 self.stop_playback(None);
@@ -2431,7 +2491,10 @@ impl Component for AppModel {
                     .paste_after_selection(&self.selection, &self.clipboard);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
-                self.status = format!("Pasted {} frame(s).", inserted.len());
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Pasted {} frame(s).", inserted.len()),
+                );
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
             }
@@ -2444,14 +2507,20 @@ impl Component for AppModel {
                 self.preview_path = None;
                 self.preview_frame_id = None;
                 self.invalidate_export_preview();
-                self.status = format!("Removed {removed} frame(s).");
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Removed {removed} frame(s)."),
+                );
             }
             AppMsg::AppendDuplicateLoop => {
                 self.stop_playback(None);
                 let inserted = self.timeline.append_duplicate_loop(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
-                self.status = format!("Appended duplicate loop with {} frame(s).", inserted.len());
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Appended duplicate loop with {} frame(s).", inserted.len()),
+                );
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
             }
@@ -2462,7 +2531,10 @@ impl Component for AppModel {
                     .append_reverse_loop(&self.selection, repeat_edges);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
-                self.status = format!("Appended reverse loop with {} frame(s).", inserted.len());
+                self.set_status(
+                    FooterStatusScope::Loop,
+                    format!("Appended reverse loop with {} frame(s).", inserted.len()),
+                );
                 self.refresh_frame_jobs(inserted, &sender);
                 self.queue_preview_for_primary_selection(&sender);
             }
@@ -2479,19 +2551,28 @@ impl Component for AppModel {
                 self.stop_playback(None);
                 let selection = self.loop_selection();
                 if self.loop_scope == LoopScope::Selected && selection.is_empty() {
-                    self.status = "Select a range in the timeline first.".to_string();
+                    self.set_status(
+                        FooterStatusScope::Loop,
+                        "Select a range in the timeline first.",
+                    );
                 } else {
                     let source = self.current_loop_source();
                     if source.is_empty() {
-                        self.status = "No frames available for loop creation.".to_string();
+                        self.set_status(
+                            FooterStatusScope::Loop,
+                            "No frames available for loop creation.",
+                        );
                     } else {
                         let inserted = self.timeline.append_copies(&source, self.loop_repeats);
                         self.selection = inserted.iter().copied().collect();
                         self.selection_anchor_id = inserted.first().copied();
-                        self.status = format!(
-                            "Created a {} loop with {} new frame(s).",
-                            self.loop_method.title().to_ascii_lowercase(),
-                            inserted.len()
+                        self.set_status(
+                            FooterStatusScope::Loop,
+                            format!(
+                                "Created a {} loop with {} new frame(s).",
+                                self.loop_method.title().to_ascii_lowercase(),
+                                inserted.len()
+                            ),
                         );
                         self.refresh_frame_jobs(inserted, &sender);
                         self.queue_preview_for_primary_selection(&sender);
@@ -2514,7 +2595,10 @@ impl Component for AppModel {
                 self.apply_to_selection(|frame| {
                     frame.transform_spec.rotate_quarter_turns += delta;
                 });
-                self.status = "Updated rotation for selected frames.".to_string();
+                self.set_status(
+                    FooterStatusScope::Edit,
+                    "Updated rotation for selected frames.",
+                );
                 self.refresh_selection_jobs(&sender);
             }
             AppMsg::ToggleSelectionFlip { horizontal } => {
@@ -2526,11 +2610,12 @@ impl Component for AppModel {
                         frame.transform_spec.flip_vertical = !frame.transform_spec.flip_vertical;
                     }
                 });
-                self.status = if horizontal {
+                let status = if horizontal {
                     "Updated horizontal flip for selected frames.".to_string()
                 } else {
                     "Updated vertical flip for selected frames.".to_string()
                 };
+                self.set_status(FooterStatusScope::Edit, status);
                 self.refresh_selection_jobs(&sender);
             }
             AppMsg::ApplyInspectorTransform(values) => {
@@ -2541,7 +2626,10 @@ impl Component for AppModel {
                     frame.transform_spec.resize = values.resize;
                     frame.transform_spec.fit_mode = values.fit_mode;
                 });
-                self.status = "Applied edit values to selected frames.".to_string();
+                self.set_status(
+                    FooterStatusScope::Edit,
+                    "Applied edit values to selected frames.",
+                );
                 self.refresh_selection_jobs(&sender);
             }
             AppMsg::SetExportPreset(preset) => {
@@ -2602,8 +2690,14 @@ impl Component for AppModel {
             AppMsg::SaveProject(path) => {
                 let document = self.project_document();
                 match save_project(&path, &document) {
-                    Ok(_) => self.status = format!("Saved project to {}", path.display()),
-                    Err(err) => self.status = format!("Failed to save project: {err}"),
+                    Ok(_) => self.set_status(
+                        FooterStatusScope::Organize,
+                        format!("Saved project to {}", path.display()),
+                    ),
+                    Err(err) => self.set_status(
+                        FooterStatusScope::Organize,
+                        format!("Failed to save project: {err}"),
+                    ),
                 }
             }
             AppMsg::OpenProject(path) => {
@@ -2611,35 +2705,45 @@ impl Component for AppModel {
                 match load_project(&path) {
                     Ok(document) => {
                         let frame_ids = self.apply_project_document(document);
-                        self.status = format!(
-                            "Loaded project {}. Refreshing thumbnails...",
-                            path.display()
+                        self.set_status(
+                            FooterStatusScope::Organize,
+                            format!(
+                                "Loaded project {}. Refreshing thumbnails...",
+                                path.display()
+                            ),
                         );
                         self.refresh_frame_jobs(frame_ids, &sender);
                         self.queue_preview_for_primary_selection(&sender);
                     }
-                    Err(err) => self.status = format!("Failed to load project: {err}"),
+                    Err(err) => self.set_status(
+                        FooterStatusScope::Organize,
+                        format!("Failed to load project: {err}"),
+                    ),
                 }
             }
             AppMsg::ChooseOutputPath(path) => {
                 self.last_output_path = Some(normalized_output_path(&path));
+                self.set_status(FooterStatusScope::Export, "Export output path updated.");
             }
             AppMsg::ExportNow => {
                 let Some(output_path) = self.last_output_path.clone() else {
-                    self.status = "Choose an output path first.".to_string();
+                    self.set_status(FooterStatusScope::Export, "Choose an output path first.");
                     self.recompute_command_preview();
                     return;
                 };
                 let output_path = normalized_output_path(&output_path);
                 self.last_output_path = Some(output_path.clone());
                 if self.export_in_progress {
-                    self.status = "Export already running.".to_string();
+                    self.set_status(FooterStatusScope::Export, "Export already running.");
                     self.recompute_command_preview();
                     return;
                 }
                 EXPORT_LAYOUT_WATCH_SUSPENDED.store(true, Ordering::Relaxed);
                 self.export_in_progress = true;
-                self.status = format!("Exporting to {} ...", output_path.display());
+                self.set_status(
+                    FooterStatusScope::Export,
+                    format!("Exporting to {} ...", output_path.display()),
+                );
                 let initial_progress = ExportProgressState {
                     fraction: 0.0,
                     detail: "Preparing export...".to_string(),
@@ -2714,7 +2818,10 @@ impl Component for AppModel {
                         if let Some(active) = self.export_poll_active.take() {
                             active.set(false);
                         }
-                        self.status = format!("Failed to start export worker: {err}");
+                        self.set_status(
+                            FooterStatusScope::Export,
+                            format!("Failed to start export worker: {err}"),
+                        );
                     }
                 }
             }
@@ -2742,7 +2849,10 @@ impl Component for AppModel {
                 close_allowed,
             } => {
                 if let Err(err) = self.save_autosave_project() {
-                    self.status = format!("Autosave failed during close: {err}");
+                    self.set_status(
+                        FooterStatusScope::Global,
+                        format!("Autosave failed during close: {err}"),
+                    );
                 }
                 close_allowed.set(true);
                 window.close();
@@ -2777,9 +2887,12 @@ impl Component for AppModel {
                     }
                 }
                 if let Some(error) = error {
-                    self.status = format!("Thumbnail failed for frame {frame_id}: {error}");
+                    self.set_status(
+                        FooterStatusScope::Global,
+                        format!("Thumbnail failed for frame {frame_id}: {error}"),
+                    );
                 } else if self.thumbnails_pending == 0 {
-                    self.status = "Timeline thumbnails ready.".to_string();
+                    self.set_status(FooterStatusScope::Global, "Timeline thumbnails ready.");
                 }
             }
             CommandMsg::PreviewReady {
@@ -2802,7 +2915,10 @@ impl Component for AppModel {
                     }
                 }
                 if let Some(error) = error {
-                    self.status = format!("Preview failed for frame {frame_id}: {error}");
+                    self.set_status(
+                        FooterStatusScope::Global,
+                        format!("Preview failed for frame {frame_id}: {error}"),
+                    );
                 }
             }
             CommandMsg::ExportPreviewReady {
@@ -2820,10 +2936,15 @@ impl Component for AppModel {
                     self.export_preview_rendered_size = Some(render_size);
                 }
                 if let Some(error) = error {
-                    self.status = format!("Export preview failed for frame {frame_id}: {error}");
+                    self.set_status(
+                        FooterStatusScope::Export,
+                        format!("Export preview failed for frame {frame_id}: {error}"),
+                    );
                 } else if self.primary_selected_id() == Some(frame_id) {
-                    self.status =
-                        "Export preview refreshed with the current export settings.".to_string();
+                    self.set_status(
+                        FooterStatusScope::Export,
+                        "Export preview refreshed with the current export settings.",
+                    );
                 }
             }
         }
@@ -2844,7 +2965,8 @@ impl Component for AppModel {
         let readiness_text = self.readiness_text();
 
         if self.export_in_progress || self.export_completion_pending {
-            widgets.status_label.set_label("");
+            widgets.status_label.set_visible(false);
+            widgets.footer_progress_bar.set_visible(true);
             widgets.footer_frames_label.set_label(&format!(
                 "{} image{}",
                 frame_count,
@@ -2866,8 +2988,10 @@ impl Component for AppModel {
                         .set_text(Some("Preparing export..."));
                 }
             } else {
-                widgets.footer_progress_bar.set_fraction(0.0);
-                widgets.footer_progress_bar.set_text(Some("Idle"));
+                widgets.footer_progress_bar.set_fraction(1.0);
+                widgets
+                    .footer_progress_bar
+                    .set_text(Some("Finishing export..."));
             }
             widgets.footer_state_label.set_label(&readiness_text);
             widgets
@@ -2876,9 +3000,6 @@ impl Component for AppModel {
             widgets.export_button.set_sensitive(
                 !self.export_completion_pending && has_frames && self.last_output_path.is_some(),
             );
-            if self.export_completion_pending {
-                widgets.status_label.set_label(&self.status);
-            }
             return;
         }
 
@@ -2960,11 +3081,9 @@ impl Component for AppModel {
             "workflow-tab-active",
             self.active_tab == WorkflowTab::Export,
         );
-        widgets.status_label.set_label(if self.export_in_progress {
-            ""
-        } else {
-            &self.status
-        });
+        widgets.status_label.set_visible(true);
+        widgets.footer_progress_bar.set_visible(false);
+        widgets.status_label.set_label(&self.footer_context_text());
         widgets.footer_frames_label.set_label(&format!(
             "{} image{}",
             frame_count,
@@ -2974,7 +3093,7 @@ impl Component for AppModel {
             .footer_duration_label
             .set_label(&format_duration_ms(self.total_duration_ms()));
         widgets.footer_progress_bar.set_fraction(0.0);
-        widgets.footer_progress_bar.set_text(Some("Idle"));
+        widgets.footer_progress_bar.set_text(None);
         widgets.footer_state_label.set_label(&readiness_text);
         widgets
             .diagnostics_overview_label
@@ -3243,6 +3362,192 @@ impl Component for AppModel {
 }
 
 impl AppModel {
+    fn set_status(&mut self, scope: FooterStatusScope, status: impl Into<String>) {
+        self.status = status.into();
+        self.footer_status_scope = scope;
+    }
+
+    fn scoped_status_text(&self, scope: FooterStatusScope) -> Option<&str> {
+        (self.footer_status_scope == scope).then_some(self.status.as_str())
+    }
+
+    fn footer_summary_text_for_tab(&self, tab: WorkflowTab) -> String {
+        match tab {
+            WorkflowTab::Organize => self.organize_footer_summary_text(),
+            WorkflowTab::Edit => self.edit_footer_summary_text(),
+            WorkflowTab::Loop => self.loop_footer_summary_text(),
+            WorkflowTab::Export => self.export_footer_summary_text(),
+            WorkflowTab::Diagnostics => self.diagnostics_footer_summary_text(),
+        }
+    }
+
+    fn footer_context_text(&self) -> String {
+        let summary = self.footer_summary_text_for_tab(self.active_tab);
+        if self.footer_status_scope.matches_tab(self.active_tab) {
+            if summary.is_empty() || self.status == summary {
+                return self.status.clone();
+            }
+            return format!("{} • {}", self.status, summary);
+        }
+        if !summary.is_empty() {
+            return summary;
+        }
+        if self.footer_status_scope == FooterStatusScope::Global {
+            return self.status.clone();
+        }
+        String::new()
+    }
+
+    fn organize_footer_summary_text(&self) -> String {
+        let frame_count = self.timeline.frames().len();
+        if frame_count == 0 {
+            return "Import images or open a project to begin.".to_string();
+        }
+        if self.selection.is_empty() {
+            return format!(
+                "{} image{} loaded. Drag timeline tiles to reorder.",
+                frame_count,
+                if frame_count == 1 { "" } else { "s" }
+            );
+        }
+        format!(
+            "{} selected. Drag tiles to reorder or switch to Edit/Timeline for changes.",
+            self.selection.len()
+        )
+    }
+
+    fn edit_footer_summary_text(&self) -> String {
+        if self.selection.is_empty() {
+            return "Select a frame to rotate, flip, crop, or resize.".to_string();
+        }
+        if self.selection.len() > 1 {
+            return format!(
+                "{} selected. Quick actions and advanced edits apply to all selected frames.",
+                self.selection.len()
+            );
+        }
+
+        let Some(frame) = self.primary_selected_frame() else {
+            return "Select a frame to rotate, flip, crop, or resize.".to_string();
+        };
+
+        let index = self
+            .current_frame_index()
+            .map(|value| value + 1)
+            .unwrap_or(1);
+        let mut parts = vec![
+            format!("Frame {index:03} {}", frame.file_name()),
+            frame
+                .source_dimensions
+                .map(|(width, height)| format!("{width} x {height}"))
+                .unwrap_or_else(|| "unknown size".to_string()),
+            format!("{} ms", frame.duration_ms),
+        ];
+        let mut edits = Vec::new();
+        if let Some(crop) = frame.transform_spec.crop {
+            edits.push(format!("crop {} x {}", crop.width, crop.height));
+        }
+        if let Some(resize) = frame.transform_spec.resize {
+            edits.push(format!("resize {} x {}", resize.width, resize.height));
+            if frame.transform_spec.fit_mode != FitMode::Contain {
+                edits.push(format!(
+                    "fit {}",
+                    frame.transform_spec.fit_mode.as_str().to_ascii_lowercase()
+                ));
+            }
+        }
+        let rotation = frame.transform_spec.rotate_quarter_turns.rem_euclid(4);
+        if rotation != 0 {
+            edits.push(format!("rotate {}°", rotation * 90));
+        }
+        match (
+            frame.transform_spec.flip_horizontal,
+            frame.transform_spec.flip_vertical,
+        ) {
+            (true, true) => edits.push("flip H/V".to_string()),
+            (true, false) => edits.push("flip H".to_string()),
+            (false, true) => edits.push("flip V".to_string()),
+            (false, false) => {}
+        }
+        if edits.is_empty() {
+            edits.push("no edits yet".to_string());
+        }
+        parts.extend(edits);
+        parts.join(" • ")
+    }
+
+    fn loop_footer_summary_text(&self) -> String {
+        if self.timeline.is_empty() {
+            return "Import images to build loops and timeline actions.".to_string();
+        }
+
+        let source = self.current_loop_source();
+        if source.is_empty() {
+            return "Select a range to build a loop, or switch scope to All Images.".to_string();
+        }
+
+        let added_frames = source.len().saturating_mul(self.loop_repeats as usize);
+        let added_duration = source
+            .iter()
+            .map(|frame| u64::from(frame.duration_ms))
+            .sum::<u64>()
+            .saturating_mul(u64::from(self.loop_repeats));
+        let scope_label = match self.loop_scope {
+            LoopScope::Selected => "Selected Range",
+            LoopScope::AllFrames => "All Images",
+        };
+        format!(
+            "{} • {} • {} repeat{} • adds {} frame(s) / {}",
+            self.loop_method.title(),
+            scope_label,
+            self.loop_repeats,
+            if self.loop_repeats == 1 { "" } else { "s" },
+            added_frames,
+            format_duration_ms(added_duration)
+        )
+    }
+
+    fn export_footer_summary_text(&self) -> String {
+        let export_frame_count = self
+            .timeline
+            .frames()
+            .iter()
+            .filter(|frame| frame.enabled)
+            .count();
+        if export_frame_count == 0 {
+            return "Import images before exporting.".to_string();
+        }
+        if self.last_output_path.is_none() {
+            return "Choose an output file.".to_string();
+        }
+        let loop_text = if self.export_profile.loop_count == 0 {
+            "infinite".to_string()
+        } else {
+            self.export_profile.loop_count.to_string()
+        };
+        format!(
+            "{} • {} • {} frame{} • {} • loop {}",
+            self.export_profile.preset.as_str(),
+            self.export_dimensions_text(),
+            export_frame_count,
+            if export_frame_count == 1 { "" } else { "s" },
+            format_duration_ms(self.total_duration_ms()),
+            loop_text
+        )
+    }
+
+    fn diagnostics_footer_summary_text(&self) -> String {
+        if self.diagnostics.ffmpeg_ok && self.diagnostics.ffprobe_ok {
+            "ffmpeg and ffprobe are available.".to_string()
+        } else {
+            self.diagnostics
+                .issues
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "A required system tool is unavailable.".to_string())
+        }
+    }
+
     fn import_paths(
         &mut self,
         paths: Vec<PathBuf>,
@@ -3257,9 +3562,12 @@ impl AppModel {
         };
         self.selection = imported_ids.iter().copied().collect();
         self.selection_anchor_id = imported_ids.first().copied();
-        self.status = format!(
-            "Imported {} frame(s). Generating thumbnails...",
-            imported_ids.len()
+        self.set_status(
+            FooterStatusScope::Organize,
+            format!(
+                "Imported {} frame(s). Generating thumbnails...",
+                imported_ids.len()
+            ),
         );
         self.refresh_frame_jobs(imported_ids, sender);
         self.queue_preview_for_primary_selection(sender);
@@ -3323,30 +3631,32 @@ impl AppModel {
             frame_ids.first().copied()
         };
         let Some(frame_id) = target else {
-            self.status = "No frames in timeline.".to_string();
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
             return;
         };
         self.select_single_frame(frame_id, sender);
-        self.status = if end {
+        let status = if end {
             "Moved to last frame.".to_string()
         } else {
             "Moved to first frame.".to_string()
         };
+        self.set_status(FooterStatusScope::Global, status);
     }
 
     fn navigate_by_step(&mut self, offset: isize, sender: &ComponentSender<Self>) {
         self.stop_playback(None);
         let frame_ids = self.timeline_frame_ids();
         let Some(frame_id) = step_frame_id(&frame_ids, self.primary_selected_id(), offset) else {
-            self.status = "No frames in timeline.".to_string();
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
             return;
         };
         self.select_single_frame(frame_id, sender);
-        self.status = if offset < 0 {
+        let status = if offset < 0 {
             "Moved back one frame.".to_string()
         } else {
             "Moved forward one frame.".to_string()
         };
+        self.set_status(FooterStatusScope::Global, status);
     }
 
     fn toggle_playback(&mut self, sender: &ComponentSender<Self>) {
@@ -3357,14 +3667,14 @@ impl AppModel {
 
         let frame_ids = self.timeline_frame_ids();
         let Some(frame_id) = playback_start_frame_id(&frame_ids, self.primary_selected_id()) else {
-            self.status = "No frames in timeline.".to_string();
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
             return;
         };
 
         self.playback_generation = self.playback_generation.wrapping_add(1);
         self.playback_active = true;
         self.select_single_frame(frame_id, sender);
-        self.status = "Playback started.".to_string();
+        self.set_status(FooterStatusScope::Global, "Playback started.");
         self.schedule_playback_advance(self.playback_generation, sender);
     }
 
@@ -3393,7 +3703,7 @@ impl AppModel {
             self.playback_generation = self.playback_generation.wrapping_add(1);
         }
         if let Some(status) = status {
-            self.status = status.to_string();
+            self.set_status(FooterStatusScope::Global, status);
         }
     }
 
@@ -3512,7 +3822,10 @@ impl AppModel {
 
     fn queue_export_preview_for_primary_selection(&mut self, sender: &ComponentSender<Self>) {
         let Some(frame) = self.primary_selected_frame().cloned() else {
-            self.status = "Select a frame to render an export preview.".to_string();
+            self.set_status(
+                FooterStatusScope::Export,
+                "Select a frame to render an export preview.",
+            );
             return;
         };
 
@@ -3530,11 +3843,17 @@ impl AppModel {
         if cached_preview_path.is_file() {
             self.export_preview_path = Some(cached_preview_path);
             self.export_preview_rendered_size = Some(render_size);
-            self.status = "Export preview refreshed with the current export settings.".to_string();
+            self.set_status(
+                FooterStatusScope::Export,
+                "Export preview refreshed with the current export settings.",
+            );
             return;
         }
 
-        self.status = "Rendering export preview with the current export settings...".to_string();
+        self.set_status(
+            FooterStatusScope::Export,
+            "Rendering export preview with the current export settings...",
+        );
         let frame_id = frame.id;
         let cache_dir = self.cache_dir.clone();
         sender.spawn_oneshot_command(move || {
@@ -3594,7 +3913,10 @@ impl AppModel {
 
     fn apply_quick_crop(&mut self, sender: &ComponentSender<Self>) {
         if self.selection.is_empty() {
-            self.status = "Select frames in the timeline before applying a crop.".to_string();
+            self.set_status(
+                FooterStatusScope::Edit,
+                "Select frames in the timeline before applying a crop.",
+            );
             return;
         }
 
@@ -3615,13 +3937,14 @@ impl AppModel {
         }
 
         if applied == 0 {
-            self.status =
-                "Crop could not be applied yet because the selected frames have no image size information."
-                    .to_string();
+            self.set_status(
+                FooterStatusScope::Edit,
+                "Crop could not be applied yet because the selected frames have no image size information.",
+            );
             return;
         }
 
-        self.status = if skipped == 0 {
+        let status = if skipped == 0 {
             format!(
                 "Applied a {} crop to {} frame(s).",
                 self.crop_preset.title().to_ascii_lowercase(),
@@ -3635,12 +3958,16 @@ impl AppModel {
                 skipped
             )
         };
+        self.set_status(FooterStatusScope::Edit, status);
         self.refresh_selection_jobs(sender);
     }
 
     fn clear_quick_crop(&mut self, sender: &ComponentSender<Self>) {
         if self.selection.is_empty() {
-            self.status = "Select frames in the timeline before clearing a crop.".to_string();
+            self.set_status(
+                FooterStatusScope::Edit,
+                "Select frames in the timeline before clearing a crop.",
+            );
             return;
         }
 
@@ -3652,11 +3979,17 @@ impl AppModel {
         }
 
         if cleared == 0 {
-            self.status = "The selected frames do not currently have a crop to clear.".to_string();
+            self.set_status(
+                FooterStatusScope::Edit,
+                "The selected frames do not currently have a crop to clear.",
+            );
             return;
         }
 
-        self.status = format!("Cleared crop from {} frame(s).", cleared);
+        self.set_status(
+            FooterStatusScope::Edit,
+            format!("Cleared crop from {} frame(s).", cleared),
+        );
         self.refresh_selection_jobs(sender);
     }
 
@@ -3755,13 +4088,16 @@ impl AppModel {
                 if let Some(active) = self.export_poll_active.take() {
                     active.set(false);
                 }
-                self.status = "Export failed: background export state lock poisoned.".to_string();
+                self.set_status(
+                    FooterStatusScope::Export,
+                    "Export failed: background export state lock poisoned.",
+                );
                 return;
             }
         };
 
         if let Some(progress) = snapshot.progress {
-            self.status = progress.detail.clone();
+            self.set_status(FooterStatusScope::Export, progress.detail.clone());
             self.export_progress = Some(progress);
         }
 
@@ -3776,10 +4112,13 @@ impl AppModel {
             match result {
                 Ok(job) => {
                     self.last_output_path = Some(job.output_path.clone());
-                    self.status = format!("Exported {}", job.output_path.display());
+                    self.set_status(
+                        FooterStatusScope::Export,
+                        format!("Exported {}", job.output_path.display()),
+                    );
                 }
                 Err(err) => {
-                    self.status = format!("Export failed: {err}");
+                    self.set_status(FooterStatusScope::Export, format!("Export failed: {err}"));
                 }
             }
             let sender = sender.clone();
@@ -3811,7 +4150,7 @@ impl AppModel {
     }
 
     fn readiness_text(&self) -> String {
-        if self.export_in_progress {
+        if self.export_in_progress || self.export_completion_pending {
             "Exporting".to_string()
         } else if !self.diagnostics.ffmpeg_ok || !self.diagnostics.ffprobe_ok {
             "Needs Setup".to_string()
@@ -3958,7 +4297,10 @@ impl AppModel {
                 "export-action-warning",
             );
         }
-        if self.status.starts_with("Export failed") {
+        if self
+            .scoped_status_text(FooterStatusScope::Export)
+            .is_some_and(|status| status.starts_with("Export failed"))
+        {
             return (
                 "dialog-error-symbolic",
                 "Export Failed",
@@ -3966,7 +4308,10 @@ impl AppModel {
                 "export-action-error",
             );
         }
-        if self.status.starts_with("Exported ") {
+        if self
+            .scoped_status_text(FooterStatusScope::Export)
+            .is_some_and(|status| status.starts_with("Exported "))
+        {
             return (
                 "emblem-ok-symbolic",
                 "Export Complete",
