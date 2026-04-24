@@ -148,7 +148,7 @@ Use this when validating the app locally after a change.
 5. **Timeline edits**: Verify duration changes, duplicate, copy/paste, remove, move up/down, and drag reorder; expect the timeline order and selection state to remain coherent.
 6. **Preview and transforms**: Rotate, flip, crop, resize, and change fit mode; expect the selected-frame preview to update after each edit.
 7. **Workflow tabs**: Visit Edit, Timeline, Export, and Diagnostics; expect each tab to show its controls without overlapping or clipped text.
-8. **Timeline loop actions**: Run duplicate, reverse, and ping-pong loop actions from the Timeline tab; expect the timeline to update according to the selected loop source.
+8. **Timeline loop action**: Run `Create Loop` from the Timeline tab; expect the app to append only the mirrored interior frames and double the original source start/end frame durations for a smoother turnaround.
 9. **Export**: Set an output path and export an animated WebP; expect the output file to exist and open in an image viewer/browser that supports animated WebP.
 10. **Project persistence**: Save a project, reopen it, and confirm frames, order, durations, transforms, and export settings are restored.
 

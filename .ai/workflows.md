@@ -114,7 +114,7 @@ Use this after interaction or export changes:
 5. Verify duration edits, duplicate, copy/paste, remove, move up/down, and drag reorder; expect coherent timeline order and selection.
 6. Verify rotate, flip, crop, resize, and fit-mode edits update the preview.
 7. Visit Edit, Loop, Export, and Diagnostics; expect each tab to show controls without overlapping or clipped text.
-8. Verify loop duplicate, loop reverse, and ping-pong.
+8. Verify `Create Loop` appends only the mirrored interior frames and lengthens the original source endpoints.
 9. Export an animated WebP and confirm the output exists.
 10. Save and reload a project and confirm frames, order, durations, transforms, and export settings persist.
 

@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Simplify loop builder to one mirrored action
+
+- Status: Done
+- Request: Remove duplicate/reverse/ping-pong loop type choices, keep one guided mirrored-loop action, double the original source endpoints when creating the loop, and update the UI/docs to describe the simplified behavior without legacy loop mode names.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/timeline.rs`, `README.md`, `AGENTS.md`, `.ai/workflows.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/timeline.rs`, `README.md`, `AGENTS.md`, `.ai/workflows.md`
+- Verification: `cargo fmt --all`, `git diff --check`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run >/tmp/awebpinator-loop-simplify-smoke.log 2>&1` with exit code `124`
+- Notes: Removed the loop method cards and the old duplicate/reverse/ping-pong state so Timeline loop creation now uses one mirrored-loop action with a short explanation. Creating a loop now doubles the original source endpoints in place, appends only the reversed interior frames, updates the loop summaries/footer to describe the simplified behavior, and leaves selection intact when no new mirrored frames are appended. Added timeline coverage for mirrored source generation and endpoint-duration holds. Manual interactive GTK validation was not performed in this environment.
+
 ### 2026-04-24 - Expand timeline keyboard shortcuts
 
 - Status: Done

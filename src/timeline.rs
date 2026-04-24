@@ -3,6 +3,12 @@ use std::path::PathBuf;
 
 use crate::types::FrameItem;
 
+#[derive(Debug, Default)]
+pub struct MirroredLoopResult {
+    pub inserted_ids: Vec<u64>,
+    pub updated_endpoint_ids: Vec<u64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Timeline {
     frames: Vec<FrameItem>,
@@ -157,30 +163,13 @@ impl Timeline {
         true
     }
 
-    pub fn append_duplicate_loop(&mut self, selection: &BTreeSet<u64>) -> Vec<u64> {
-        let source = self.selection_or_all(selection);
-        let mut inserted = Vec::new();
-        for frame in source {
-            let new_frame = self.clone_with_new_id(&frame);
-            inserted.push(new_frame.id);
-            self.frames.push(new_frame);
-        }
-        inserted
-    }
-
-    pub fn duplicate_loop_source(&self, selection: &BTreeSet<u64>) -> Vec<FrameItem> {
-        self.selection_or_all(selection)
-    }
-
-    pub fn reverse_loop_source(
-        &self,
-        selection: &BTreeSet<u64>,
-        repeat_edges: bool,
-    ) -> Vec<FrameItem> {
+    pub fn mirrored_loop_source(&self, selection: &BTreeSet<u64>) -> Vec<FrameItem> {
         let mut source = self.selection_or_all(selection);
-        if !repeat_edges && source.len() > 1 {
+        if source.len() > 1 {
             source.pop();
             source.remove(0);
+        } else {
+            source.clear();
         }
         source.reverse();
         source
@@ -198,23 +187,64 @@ impl Timeline {
         inserted
     }
 
-    pub fn append_reverse_loop(
+    pub fn create_mirrored_loop(
         &mut self,
         selection: &BTreeSet<u64>,
-        repeat_edges: bool,
-    ) -> Vec<u64> {
-        let source = self.reverse_loop_source(selection, repeat_edges);
-        self.append_copies(&source, 1)
+        repeats: u32,
+    ) -> MirroredLoopResult {
+        let source_indices = self.selection_or_all_indices(selection);
+        if source_indices.is_empty() {
+            return MirroredLoopResult::default();
+        }
+
+        let updated_endpoint_ids = self.double_source_endpoint_durations(&source_indices);
+        let source = self.mirrored_loop_source(selection);
+        let inserted_ids = self.append_copies(&source, repeats);
+
+        MirroredLoopResult {
+            inserted_ids,
+            updated_endpoint_ids,
+        }
     }
 
     fn selection_or_all(&self, selection: &BTreeSet<u64>) -> Vec<FrameItem> {
-        let frames: Vec<_> = self
-            .frames
+        self.frames
             .iter()
             .filter(|frame| selection.is_empty() || selection.contains(&frame.id))
             .cloned()
-            .collect();
-        frames
+            .collect()
+    }
+
+    fn selection_or_all_indices(&self, selection: &BTreeSet<u64>) -> Vec<usize> {
+        self.frames
+            .iter()
+            .enumerate()
+            .filter_map(|(index, frame)| {
+                (selection.is_empty() || selection.contains(&frame.id)).then_some(index)
+            })
+            .collect()
+    }
+
+    fn double_source_endpoint_durations(&mut self, source_indices: &[usize]) -> Vec<u64> {
+        let Some(&first_index) = source_indices.first() else {
+            return Vec::new();
+        };
+        let last_index = *source_indices.last().unwrap_or(&first_index);
+
+        let mut updated = Vec::new();
+        {
+            let first = &mut self.frames[first_index];
+            first.duration_ms = first.duration_ms.saturating_mul(2);
+            updated.push(first.id);
+        }
+
+        if last_index != first_index {
+            let last = &mut self.frames[last_index];
+            last.duration_ms = last.duration_ms.saturating_mul(2);
+            updated.push(last.id);
+        }
+
+        updated
     }
 
     fn build_imported_frames(
@@ -289,26 +319,35 @@ mod tests {
     }
 
     #[test]
-    fn reverse_loop_can_skip_endpoints() {
+    fn mirrored_loop_uses_reversed_interior_only() {
         let mut timeline = Timeline::new();
         let imported = timeline.import_paths([
             PathBuf::from("a.png"),
             PathBuf::from("b.png"),
             PathBuf::from("c.png"),
         ]);
-        let inserted = timeline.append_reverse_loop(&ids(&imported), false);
-        let names: Vec<_> = inserted
-            .iter()
-            .map(|id| {
-                timeline
-                    .frames()
-                    .iter()
-                    .find(|frame| &frame.id == id)
-                    .unwrap()
-                    .file_name()
-            })
-            .collect();
+        let source = timeline.mirrored_loop_source(&ids(&imported));
+        let names: Vec<_> = source.iter().map(|frame| frame.file_name()).collect();
         assert_eq!(names, vec!["b.png".to_string()]);
+    }
+
+    #[test]
+    fn mirrored_loop_doubles_original_endpoints_before_appending() {
+        let mut timeline = Timeline::new();
+        let imported = timeline.import_paths([
+            PathBuf::from("a.png"),
+            PathBuf::from("b.png"),
+            PathBuf::from("c.png"),
+        ]);
+
+        let result = timeline.create_mirrored_loop(&ids(&imported), 1);
+
+        assert_eq!(result.inserted_ids.len(), 1);
+        assert_eq!(result.updated_endpoint_ids, vec![imported[0], imported[2]]);
+        assert_eq!(timeline.frames()[0].duration_ms, 200);
+        assert_eq!(timeline.frames()[1].duration_ms, 100);
+        assert_eq!(timeline.frames()[2].duration_ms, 200);
+        assert_eq!(timeline.frames()[3].file_name(), "b.png");
     }
 
     #[test]
@@ -366,7 +405,7 @@ mod tests {
         let mut timeline = Timeline::new();
         let imported = timeline.import_paths([PathBuf::from("a.png"), PathBuf::from("b.png")]);
 
-        let source = timeline.duplicate_loop_source(&ids(&imported));
+        let source = timeline.selection_or_all(&ids(&imported));
         let inserted = timeline.append_copies(&source, 3);
 
         assert_eq!(inserted.len(), 6);

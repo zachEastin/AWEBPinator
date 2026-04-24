@@ -36,6 +36,8 @@ use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
 const DEFAULT_PREVIEW_LOGICAL_WIDTH: i32 = 720;
 const DEFAULT_PREVIEW_LOGICAL_HEIGHT: i32 = 360;
 const MAX_PREVIEW_RENDER_EDGE: u32 = 4096;
+const MIRRORED_LOOP_EXPLANATION: &str =
+    "Creates a mirrored loop and holds the first and last frame slightly longer.";
 static EXPORT_LAYOUT_WATCH_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
@@ -91,9 +93,6 @@ pub enum AppMsg {
     CopySelection,
     PasteClipboard,
     RemoveSelection,
-    AppendDuplicateLoop,
-    AppendReverseLoop(bool),
-    SetLoopMethod(LoopMethod),
     SetLoopRepeats(u32),
     SetLoopScope(LoopScope),
     CreateLoop,
@@ -249,31 +248,6 @@ impl From<WorkflowTab> for FooterStatusScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LoopMethod {
-    Duplicate,
-    Reverse,
-    PingPong,
-}
-
-impl LoopMethod {
-    fn title(self) -> &'static str {
-        match self {
-            Self::Duplicate => "Duplicate",
-            Self::Reverse => "Reverse",
-            Self::PingPong => "Ping-Pong",
-        }
-    }
-
-    fn helper_text(self) -> &'static str {
-        match self {
-            Self::Duplicate => "Repeat the sequence from start to finish.",
-            Self::Reverse => "Play forward, then backward to the start.",
-            Self::PingPong => "Play forward, then backward without repeating the endpoints.",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoopScope {
     Selected,
     AllFrames,
@@ -409,7 +383,6 @@ pub struct AppModel {
     layout_mode: LayoutMode,
     active_tab: WorkflowTab,
     advanced_mode: bool,
-    loop_method: LoopMethod,
     loop_repeats: u32,
     loop_scope: LoopScope,
     crop_preset: CropPreset,
@@ -494,9 +467,6 @@ pub struct AppWidgets {
     loop_summary_label: gtk::Label,
     loop_repeats_spin: gtk::SpinButton,
     loop_create_button: gtk::Button,
-    loop_duplicate_button: gtk::Button,
-    loop_reverse_button: gtk::Button,
-    loop_ping_pong_button: gtk::Button,
     loop_scope_selected_button: gtk::Button,
     loop_scope_all_button: gtk::Button,
     export_preset_fast_button: gtk::Button,
@@ -596,7 +566,6 @@ impl Component for AppModel {
             layout_mode: layout_mode_for_width(1280),
             active_tab: WorkflowTab::Organize,
             advanced_mode: ui_preferences.advanced_mode,
-            loop_method: LoopMethod::PingPong,
             loop_repeats: 1,
             loop_scope: LoopScope::Selected,
             crop_preset: CropPreset::Square,
@@ -1171,37 +1140,8 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
             .build();
-        let loop_cards = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
-            .homogeneous(true)
-            .build();
-        let loop_duplicate_button = build_choice_button(
-            "Duplicate",
-            "Repeat the sequence from start to finish.",
-            "edit-copy-symbolic",
-            "icon-tone-cyan",
-        );
-        let loop_reverse_button = build_choice_button(
-            "Reverse",
-            "Play forward, then backward to the start.",
-            "view-refresh-symbolic",
-            "icon-tone-amber",
-        );
-        let loop_ping_pong_button = build_choice_button(
-            "Ping-Pong",
-            "Play forward, then backward without repeating the endpoints.",
-            "media-playlist-repeat-symbolic",
-            "icon-tone-green",
-        );
-        for button in [
-            &loop_duplicate_button,
-            &loop_reverse_button,
-            &loop_ping_pong_button,
-        ] {
-            loop_cards.append(button);
-        }
-        loop_box.append(&loop_cards);
+        let loop_intro_label = helper_label(MIRRORED_LOOP_EXPLANATION);
+        loop_box.append(&loop_intro_label);
         let loop_source_label =
             helper_label("Select a range in the timeline to create a focused loop.");
         loop_box.append(&loop_source_label);
@@ -2255,21 +2195,6 @@ impl Component for AppModel {
             sender,
             move |spin| sender.input(AppMsg::SetQuickResizeCustomHeight(spin.value() as u32))
         ));
-        loop_duplicate_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            move |_| sender.input(AppMsg::SetLoopMethod(LoopMethod::Duplicate))
-        ));
-        loop_reverse_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            move |_| sender.input(AppMsg::SetLoopMethod(LoopMethod::Reverse))
-        ));
-        loop_ping_pong_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            move |_| sender.input(AppMsg::SetLoopMethod(LoopMethod::PingPong))
-        ));
         loop_repeats_spin.connect_value_changed(clone!(
             #[strong]
             sender,
@@ -2588,9 +2513,6 @@ impl Component for AppModel {
             loop_summary_label,
             loop_repeats_spin,
             loop_create_button,
-            loop_duplicate_button,
-            loop_reverse_button,
-            loop_ping_pong_button,
             loop_scope_selected_button,
             loop_scope_all_button,
             export_preset_fast_button,
@@ -2834,37 +2756,6 @@ impl Component for AppModel {
                     format!("Removed {removed} frame(s)."),
                 );
             }
-            AppMsg::AppendDuplicateLoop => {
-                self.stop_playback(None);
-                let inserted = self.timeline.append_duplicate_loop(&self.selection);
-                self.selection = inserted.iter().copied().collect();
-                self.selection_anchor_id = inserted.first().copied();
-                self.sync_quick_resize_state_from_selection();
-                self.set_status(
-                    FooterStatusScope::Loop,
-                    format!("Appended duplicate loop with {} frame(s).", inserted.len()),
-                );
-                self.refresh_frame_jobs(inserted, &sender);
-                self.queue_preview_for_primary_selection(&sender);
-            }
-            AppMsg::AppendReverseLoop(repeat_edges) => {
-                self.stop_playback(None);
-                let inserted = self
-                    .timeline
-                    .append_reverse_loop(&self.selection, repeat_edges);
-                self.selection = inserted.iter().copied().collect();
-                self.selection_anchor_id = inserted.first().copied();
-                self.sync_quick_resize_state_from_selection();
-                self.set_status(
-                    FooterStatusScope::Loop,
-                    format!("Appended reverse loop with {} frame(s).", inserted.len()),
-                );
-                self.refresh_frame_jobs(inserted, &sender);
-                self.queue_preview_for_primary_selection(&sender);
-            }
-            AppMsg::SetLoopMethod(method) => {
-                self.loop_method = method;
-            }
             AppMsg::SetLoopRepeats(value) => {
                 self.loop_repeats = value.max(1);
             }
@@ -2880,26 +2771,34 @@ impl Component for AppModel {
                         "Select a range in the timeline first.",
                     );
                 } else {
-                    let source = self.current_loop_source();
-                    if source.is_empty() {
+                    let base_source = self.current_loop_base_source();
+                    if base_source.is_empty() {
                         self.set_status(
                             FooterStatusScope::Loop,
                             "No frames available for loop creation.",
                         );
                     } else {
-                        let inserted = self.timeline.append_copies(&source, self.loop_repeats);
-                        self.selection = inserted.iter().copied().collect();
-                        self.selection_anchor_id = inserted.first().copied();
+                        let result = self
+                            .timeline
+                            .create_mirrored_loop(&selection, self.loop_repeats);
+                        if !result.inserted_ids.is_empty() {
+                            self.selection = result.inserted_ids.iter().copied().collect();
+                            self.selection_anchor_id = result.inserted_ids.first().copied();
+                        }
                         self.sync_quick_resize_state_from_selection();
                         self.set_status(
                             FooterStatusScope::Loop,
-                            format!(
-                                "Created a {} loop with {} new frame(s).",
-                                self.loop_method.title().to_ascii_lowercase(),
-                                inserted.len()
-                            ),
+                            if result.inserted_ids.is_empty() {
+                                "Extended the source endpoints for a smoother mirrored loop."
+                                    .to_string()
+                            } else {
+                                format!(
+                                    "Created mirrored loop with {} new frame(s) and longer endpoint holds.",
+                                    result.inserted_ids.len()
+                                )
+                            },
                         );
-                        self.refresh_frame_jobs(inserted, &sender);
+                        self.refresh_frame_jobs(result.inserted_ids, &sender);
                         self.queue_preview_for_primary_selection(&sender);
                     }
                 }
@@ -3602,21 +3501,6 @@ impl Component for AppModel {
             has_frames && (self.loop_scope == LoopScope::AllFrames || !self.selection.is_empty()),
         );
         set_widget_css_class(
-            &widgets.loop_duplicate_button,
-            "choice-card-active",
-            self.loop_method == LoopMethod::Duplicate,
-        );
-        set_widget_css_class(
-            &widgets.loop_reverse_button,
-            "choice-card-active",
-            self.loop_method == LoopMethod::Reverse,
-        );
-        set_widget_css_class(
-            &widgets.loop_ping_pong_button,
-            "choice-card-active",
-            self.loop_method == LoopMethod::PingPong,
-        );
-        set_widget_css_class(
             &widgets.loop_scope_selected_button,
             "pill-button-active",
             self.loop_scope == LoopScope::Selected,
@@ -3912,24 +3796,27 @@ impl AppModel {
             return "Import images to build loops and timeline actions.".to_string();
         }
 
-        let source = self.current_loop_source();
-        if source.is_empty() {
+        let base_source = self.current_loop_base_source();
+        if base_source.is_empty() {
             return "Select a range to build a loop, or switch scope to All Images.".to_string();
         }
 
-        let added_frames = source.len().saturating_mul(self.loop_repeats as usize);
-        let added_duration = source
+        let mirrored_source = self.current_loop_source();
+        let added_frames = mirrored_source
+            .len()
+            .saturating_mul(self.loop_repeats as usize);
+        let added_duration = mirrored_source
             .iter()
             .map(|frame| u64::from(frame.duration_ms))
             .sum::<u64>()
-            .saturating_mul(u64::from(self.loop_repeats));
+            .saturating_mul(u64::from(self.loop_repeats))
+            .saturating_add(Self::loop_endpoint_hold_extra_duration_ms(&base_source));
         let scope_label = match self.loop_scope {
             LoopScope::Selected => "Selected Range",
             LoopScope::AllFrames => "All Images",
         };
         format!(
-            "{} • {} • {} repeat{} • adds {} frame(s) / {}",
-            self.loop_method.title(),
+            "Mirrored Loop • {} • {} repeat{} • adds {} frame(s) / {}",
             scope_label,
             self.loop_repeats,
             if self.loop_repeats == 1 { "" } else { "s" },
@@ -4762,15 +4649,32 @@ impl AppModel {
         }
     }
 
+    fn current_loop_base_source(&self) -> Vec<FrameItem> {
+        let selection = self.loop_selection();
+        if self.loop_scope == LoopScope::Selected && selection.is_empty() {
+            return Vec::new();
+        }
+        self.timeline
+            .frames()
+            .iter()
+            .filter(|frame| selection.is_empty() || selection.contains(&frame.id))
+            .cloned()
+            .collect()
+    }
+
     fn current_loop_source(&self) -> Vec<FrameItem> {
         let selection = self.loop_selection();
         if self.loop_scope == LoopScope::Selected && selection.is_empty() {
             return Vec::new();
         }
-        match self.loop_method {
-            LoopMethod::Duplicate => self.timeline.duplicate_loop_source(&selection),
-            LoopMethod::Reverse => self.timeline.reverse_loop_source(&selection, true),
-            LoopMethod::PingPong => self.timeline.reverse_loop_source(&selection, false),
+        self.timeline.mirrored_loop_source(&selection)
+    }
+
+    fn loop_endpoint_hold_extra_duration_ms(source: &[FrameItem]) -> u64 {
+        match source {
+            [] => 0,
+            [frame] => u64::from(frame.duration_ms),
+            [first, .., last] => u64::from(first.duration_ms) + u64::from(last.duration_ms),
         }
     }
 
@@ -4785,31 +4689,43 @@ impl AppModel {
             }
             LoopScope::AllFrames => "Using all images in the timeline",
         };
-        let source = self.current_loop_source();
-        let duration = source
+        let base_source = self.current_loop_base_source();
+        let mirrored_source = self.current_loop_source();
+        let base_duration = base_source
             .iter()
             .map(|frame| u64::from(frame.duration_ms))
             .sum::<u64>();
+        let mirrored_duration = mirrored_source
+            .iter()
+            .map(|frame| u64::from(frame.duration_ms))
+            .sum::<u64>();
+        let cycle_duration = base_duration
+            .saturating_add(Self::loop_endpoint_hold_extra_duration_ms(&base_source))
+            .saturating_add(mirrored_duration);
         format!(
-            "{}: {} frame(s) per loop • {}",
+            "{}: {} source frame(s) • appends {} mirrored frame(s) per repeat • {} per cycle",
             scope_label,
-            source.len(),
-            format_duration_ms(duration)
+            base_source.len(),
+            mirrored_source.len(),
+            format_duration_ms(cycle_duration)
         )
     }
 
     fn loop_summary_text(&self) -> String {
-        let source = self.current_loop_source();
-        let added_frames = source.len().saturating_mul(self.loop_repeats as usize);
-        let added_duration = source
+        let base_source = self.current_loop_base_source();
+        let mirrored_source = self.current_loop_source();
+        let added_frames = mirrored_source
+            .len()
+            .saturating_mul(self.loop_repeats as usize);
+        let added_duration = mirrored_source
             .iter()
             .map(|frame| u64::from(frame.duration_ms))
             .sum::<u64>()
-            .saturating_mul(u64::from(self.loop_repeats));
+            .saturating_mul(u64::from(self.loop_repeats))
+            .saturating_add(Self::loop_endpoint_hold_extra_duration_ms(&base_source));
         format!(
-            "Method: {}\n{}\nEstimated addition: {} frame(s) • {}",
-            self.loop_method.title(),
-            self.loop_method.helper_text(),
+            "{}\nEstimated addition: {} frame(s) • {}",
+            MIRRORED_LOOP_EXPLANATION,
             added_frames,
             format_duration_ms(added_duration)
         )

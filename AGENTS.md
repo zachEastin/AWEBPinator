@@ -78,6 +78,7 @@ If the change is specifically visual or interaction-heavy, prefer a real interac
 
 - Main preview/editor occupies the main body
 - Timeline is a horizontal thumbnail strip along the bottom
+- Timeline loop creation is a single mirrored-loop action that holds the original source endpoints slightly longer
 - Timeline tiles should currently show only:
   - preview
   - frame number
