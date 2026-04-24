@@ -43,26 +43,35 @@ pub fn preview_cache_path(
     render_size: PreviewRenderSize,
 ) -> PathBuf {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    frame.source_path.hash(&mut hasher);
-    frame.transform_spec.rotate_quarter_turns.hash(&mut hasher);
-    frame.transform_spec.flip_horizontal.hash(&mut hasher);
-    frame.transform_spec.flip_vertical.hash(&mut hasher);
-    frame
-        .transform_spec
-        .crop
-        .map(|crop| (crop.x, crop.y, crop.width, crop.height))
-        .hash(&mut hasher);
-    frame
-        .transform_spec
-        .resize
-        .map(|resize| (resize.width, resize.height))
-        .hash(&mut hasher);
-    frame.transform_spec.fit_mode.as_str().hash(&mut hasher);
+    hash_frame_preview_inputs(frame, &mut hasher);
     render_size.width.hash(&mut hasher);
     render_size.height.hash(&mut hasher);
     let fingerprint = hasher.finish();
 
     cache_dir.join(format!("preview-{}-{fingerprint:016x}.png", frame.id))
+}
+
+pub fn export_preview_cache_path(
+    frame: &FrameItem,
+    cache_dir: &Path,
+    render_size: PreviewRenderSize,
+    export_size: Option<ResizeTarget>,
+    export_fit_mode: FitMode,
+) -> PathBuf {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hash_frame_preview_inputs(frame, &mut hasher);
+    export_size
+        .map(|resize| (resize.width, resize.height))
+        .hash(&mut hasher);
+    export_fit_mode.as_str().hash(&mut hasher);
+    render_size.width.hash(&mut hasher);
+    render_size.height.hash(&mut hasher);
+    let fingerprint = hasher.finish();
+
+    cache_dir.join(format!(
+        "export-preview-{}-{fingerprint:016x}.png",
+        frame.id
+    ))
 }
 
 pub fn render_preview(
@@ -88,6 +97,36 @@ pub fn render_preview(
     Ok(target_path)
 }
 
+pub fn render_export_preview(
+    frame: &FrameItem,
+    cache_dir: &Path,
+    render_size: PreviewRenderSize,
+    export_size: Option<ResizeTarget>,
+    export_fit_mode: FitMode,
+) -> anyhow::Result<PathBuf> {
+    let target_path =
+        export_preview_cache_path(frame, cache_dir, render_size, export_size, export_fit_mode);
+    if target_path.is_file() {
+        return Ok(target_path);
+    }
+
+    let image = image::open(&frame.source_path)
+        .with_context(|| format!("open frame {}", frame.source_path.display()))?;
+    let transformed = apply_transform(
+        image,
+        &frame.transform_spec,
+        export_size.map(|target| (target, export_fit_mode)),
+    );
+    let preview = transformed.thumbnail(render_size.width, render_size.height);
+    let temporary_path = temporary_preview_path(&target_path);
+    preview
+        .save(&temporary_path)
+        .with_context(|| format!("save export preview {}", temporary_path.display()))?;
+    fs::rename(&temporary_path, &target_path)
+        .with_context(|| format!("publish export preview {}", target_path.display()))?;
+    Ok(target_path)
+}
+
 fn temporary_preview_path(target_path: &Path) -> PathBuf {
     let file_name = target_path
         .file_name()
@@ -95,6 +134,27 @@ fn temporary_preview_path(target_path: &Path) -> PathBuf {
         .unwrap_or("preview.png");
     let suffix = PREVIEW_TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
     target_path.with_file_name(format!(".{file_name}.{suffix}.tmp"))
+}
+
+fn hash_frame_preview_inputs(
+    frame: &FrameItem,
+    hasher: &mut std::collections::hash_map::DefaultHasher,
+) {
+    frame.source_path.hash(hasher);
+    frame.transform_spec.rotate_quarter_turns.hash(hasher);
+    frame.transform_spec.flip_horizontal.hash(hasher);
+    frame.transform_spec.flip_vertical.hash(hasher);
+    frame
+        .transform_spec
+        .crop
+        .map(|crop| (crop.x, crop.y, crop.width, crop.height))
+        .hash(hasher);
+    frame
+        .transform_spec
+        .resize
+        .map(|resize| (resize.width, resize.height))
+        .hash(hasher);
+    frame.transform_spec.fit_mode.as_str().hash(hasher);
 }
 
 pub fn render_frame_to_path(

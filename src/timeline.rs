@@ -76,14 +76,12 @@ impl Timeline {
     pub fn duplicate_selected(&mut self, selection: &BTreeSet<u64>) -> Vec<u64> {
         let indices = Self::selected_indices(selection, &self.frames);
         let mut inserted_ids = Vec::new();
-        let mut offset = 0usize;
-        for index in indices {
+        for (offset, index) in indices.into_iter().enumerate() {
             let source = self.frames[index + offset].clone();
             let new_frame = self.clone_with_new_id(&source);
             let insert_at = index + offset + 1;
             inserted_ids.push(new_frame.id);
             self.frames.insert(insert_at, new_frame);
-            offset += 1;
         }
         inserted_ids
     }
@@ -170,24 +168,43 @@ impl Timeline {
         inserted
     }
 
-    pub fn append_reverse_loop(
-        &mut self,
+    pub fn duplicate_loop_source(&self, selection: &BTreeSet<u64>) -> Vec<FrameItem> {
+        self.selection_or_all(selection)
+    }
+
+    pub fn reverse_loop_source(
+        &self,
         selection: &BTreeSet<u64>,
         repeat_edges: bool,
-    ) -> Vec<u64> {
+    ) -> Vec<FrameItem> {
         let mut source = self.selection_or_all(selection);
         if !repeat_edges && source.len() > 1 {
             source.pop();
             source.remove(0);
         }
         source.reverse();
+        source
+    }
+
+    pub fn append_copies(&mut self, source: &[FrameItem], repeats: u32) -> Vec<u64> {
         let mut inserted = Vec::new();
-        for frame in source {
-            let new_frame = self.clone_with_new_id(&frame);
-            inserted.push(new_frame.id);
-            self.frames.push(new_frame);
+        for _ in 0..repeats.max(1) {
+            for frame in source {
+                let new_frame = self.clone_with_new_id(frame);
+                inserted.push(new_frame.id);
+                self.frames.push(new_frame);
+            }
         }
         inserted
+    }
+
+    pub fn append_reverse_loop(
+        &mut self,
+        selection: &BTreeSet<u64>,
+        repeat_edges: bool,
+    ) -> Vec<u64> {
+        let source = self.reverse_loop_source(selection, repeat_edges);
+        self.append_copies(&source, 1)
     }
 
     fn selection_or_all(&self, selection: &BTreeSet<u64>) -> Vec<FrameItem> {
@@ -342,5 +359,26 @@ mod tests {
             .map(|frame| frame.file_name())
             .collect();
         assert_eq!(names, vec!["new-a.png", "new-b.png"]);
+    }
+
+    #[test]
+    fn append_copies_repeats_source_order() {
+        let mut timeline = Timeline::new();
+        let imported = timeline.import_paths([PathBuf::from("a.png"), PathBuf::from("b.png")]);
+
+        let source = timeline.duplicate_loop_source(&ids(&imported));
+        let inserted = timeline.append_copies(&source, 3);
+
+        assert_eq!(inserted.len(), 6);
+        let names: Vec<_> = timeline
+            .frames()
+            .iter()
+            .skip(2)
+            .map(|frame| frame.file_name())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["a.png", "b.png", "a.png", "b.png", "a.png", "b.png"]
+        );
     }
 }

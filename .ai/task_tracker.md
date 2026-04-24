@@ -11,7 +11,77 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
-No active tasks.
+### 2026-04-23 - Polish section headers and summary cards
+
+- Status: Done
+- Request: Continue the visual polish pass by improving spacing, typography, shadows, section headers, and summary cards so the workflow panels feel closer to the target screenshots.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Section cards now use icon-accented headers, summary labels have a richer inset-card treatment, and shells/cards/headings use stronger spacing and shadow styling. The page-heading subtitle width constraint was moved into widget properties after GTK rejected a CSS `max-width` rule.
+
+### 2026-04-23 - Restore colored icons and enlarge preset cards
+
+- Status: Done
+- Request: Add colored icons again and make the preset cards taller and more square with larger icons to better match the target screenshots.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Added reusable icon tone classes and updated the shared button/card builders so tabs and actions can carry colored icons, while preset choice cards now use centered larger icons and taller card proportions.
+
+### 2026-04-23 - Add icon-rich workflow buttons
+
+- Status: Done
+- Request: Add nicer icons across the UI so the workflow shell better matches the visual direction from the target screenshots.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `AGENTS.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Added symbolic icons to the top actions, workflow tabs, quick-edit controls, crop cards, loop cards, export preset cards, export actions, diagnostics action, and timeline toolbar using shared labeled-button builders so the icon treatment stays consistent.
+
+### 2026-04-23 - Add guided crop workflow
+
+- Status: Done
+- Request: Continue the redesign by turning the Edit page crop control into a guided workflow instead of only routing users into Advanced mode.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/preferences.rs`, `src/thumbnail.rs`, `src/types.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: The Edit page now offers guided crop presets with start/center/end anchoring plus apply and clear actions. Guided crops work from the current cropped area when one already exists, while the Advanced numeric crop controls remain available for fine tuning.
+
+### 2026-04-23 - Persist advanced mode and upgrade export preview
+
+- Status: Done
+- Request: Continue the redesign by persisting UI-only workflow preferences and making the Export tab preview reflect export sizing instead of the generic frame preview.
+- Files inspected: `.ai/task_tracker.md`, `Cargo.toml`, `src/app.rs`, `src/lib.rs`, `src/preferences.rs`, `src/project.rs`, `src/thumbnail.rs`, `src/types.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/lib.rs`, `src/preferences.rs`, `src/thumbnail.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Advanced mode now persists in a UI preferences file outside the project JSON, and Export Preview now renders through its own cache path keyed by export sizing and fit mode so the Export tab can show a more accurate result.
+
+### 2026-04-23 - Improve default fit and responsive scaling
+
+- Status: Done
+- Request: Continue the redesign by making the default window fit better on screen and adding simple region-based responsive scaling.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Reduced the default window size and added a compact layout mode keyed off window width. On narrower windows, the main workspace, Loop/Export side rails, and timeline toolbar now reflow to stacked layouts with smaller preview size requests so the app fits on screen more comfortably.
+
+### 2026-04-23 - Refine tab-specific workflow layouts
+
+- Status: Done
+- Request: Continue the beginner-first redesign by giving Loop and Export dedicated preview/summary layouts instead of relying on the shared generic preview column.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Loop and Export now own their preview cards and summary rails, while Edit keeps the larger dedicated preview column. Preview resize messages are tab-aware so render sizing follows the visible workflow surface instead of one generic widget.
+
+### 2026-04-23 - Begin beginner-first workflow shell redesign
+
+- Status: Done
+- Request: Start implementing the new beginner-first GUI shell with workflow tabs, Advanced mode, persistent timeline, and calmer visual hierarchy.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `Cargo.toml`, `src/app.rs`, `src/types.rs`, `src/timeline.rs`, `src/selection.rs`, `src/export.rs`, `src/runtime.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/timeline.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Landed the first redesign slice with a tabbed Edit/Loop/Export/Diagnostics shell, shared preview plus persistent timeline layout, an Advanced toggle that reveals expert controls inline, export and loop summary panels, and reusable timeline loop-source helpers for guided loop creation. This slice keeps the existing project format and core non-UI logic intact.
 
 ## Completed Tasks
 

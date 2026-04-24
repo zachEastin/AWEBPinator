@@ -1,5 +1,6 @@
 pub mod app;
 pub mod export;
+pub mod preferences;
 pub mod project;
 pub mod runtime;
 pub mod selection;

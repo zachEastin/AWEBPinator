@@ -104,8 +104,7 @@ This repo includes VS Code workspace settings under `.vscode/`.
 Useful editor workflows:
 
 - Build task: `cargo build`
-- Test task: `cargo test`
-- Debug launch: `Debug AWEBPinator`
+    - Debug launch: `Debug AWEBPinator`
 - Testing panel: Rust tests discovered by `rust-analyzer`
 
 See [.vscode/README.md](./.vscode/README.md) for the editor-specific notes.
