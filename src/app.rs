@@ -1305,6 +1305,8 @@ impl Component for AppModel {
         let suppress_output_entry_change = Rc::new(Cell::new(false));
         set_accessible_label(&output_entry, "Export output path");
         output_entry.set_placeholder_text(Some("/path/to/output.webp"));
+        output_entry.set_hexpand(true);
+        output_entry.set_halign(gtk::Align::Fill);
         output_entry.add_css_class("control-surface");
         let browse_output_button =
             build_icon_button("folder-open-symbolic", "Choose export output folder");
