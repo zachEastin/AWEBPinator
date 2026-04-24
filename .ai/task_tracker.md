@@ -11,6 +11,24 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Fix responsive resizing and custom titlebar
+
+- Status: Done
+- Request: Restore full responsiveness when resizing the window and replace the default title bar with the current custom header bar.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `tests/gui/smoke.py`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `tests/gui/smoke.py`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`, `python3 tests/gui/smoke.py`, `python3 -m py_compile tests/gui/smoke.py`, `git diff --check`
+- Notes: Moved the custom header into `window.set_titlebar(...)` with `gtk::WindowHandle` and start/end `gtk::WindowControls`. Removed several width floors by dropping large content-stack/right-column/scroller/progress-bar width requests, reducing preview size requests, making tabs horizontally scrollable, and stacking Loop/Export bodies in compact mode. Updated the Dogtail smoke labels for the new Organize tab and menu-based Diagnostics action.
+
+### 2026-04-24 - Implement export dashboard UI refactor
+
+- Status: Done
+- Request: Implement the tasks in `ui_changes_task_tracker.md` to refactor the UI into a cleaner app shell, tab navigation, left-preview/right-export-control layout, calmer timeline, and hidden advanced/debug details.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `ui_changes_task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`, `python3 tests/gui/smoke.py`, `git diff --check`
+- Notes: Added an app-shell header with centered title, Advanced toggle, and secondary actions menu; replaced the Diagnostics nav pill with Organize/Edit/Loop/Export tabs; rebuilt Export as left preview plus right preset/settings/summary/action/advanced controls; replaced quality and loop controls with a slider/dropdown in the main settings area; moved lossless/encoder/raw command details under Advanced Options; refreshed timeline header/cards/status styling while preserving tile drag reorder and stable frame accessible labels. A few requested visual refinements remain approximate rather than exhaustive, including collapsed middle-frame elision and a true expandable Advanced Options chevron row.
+
 ### 2026-04-24 - Keep Loop and Export previews on the left
 
 - Status: Done

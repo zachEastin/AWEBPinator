@@ -178,6 +178,7 @@ impl PreviewRenderSize {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkflowTab {
+    Organize,
     Edit,
     Loop,
     Export,
@@ -187,6 +188,7 @@ pub enum WorkflowTab {
 impl WorkflowTab {
     fn stack_name(self) -> &'static str {
         match self {
+            Self::Organize => "organize",
             Self::Edit => "edit",
             Self::Loop => "loop",
             Self::Export => "export",
@@ -354,10 +356,10 @@ pub struct AppModel {
 pub struct AppWidgets {
     workspace_box: gtk::Box,
     content_stack: gtk::Stack,
+    tab_organize_button: gtk::Button,
     tab_edit_button: gtk::Button,
     tab_loop_button: gtk::Button,
     tab_export_button: gtk::Button,
-    tab_diagnostics_button: gtk::Button,
     advanced_switch: gtk::Switch,
     preview_panel: gtk::Box,
     timeline_toolbar: gtk::Box,
@@ -366,6 +368,7 @@ pub struct AppWidgets {
     loop_settings_column: gtk::Box,
     export_body: gtk::Box,
     export_settings_column: gtk::Box,
+    timeline_hint_label: gtk::Label,
     timeline_strip: gtk::Box,
     timeline_power_box: gtk::Box,
     nav_first_button: gtk::Button,
@@ -419,6 +422,8 @@ pub struct AppWidgets {
     edit_advanced_box: gtk::Box,
     preview_export_button: gtk::Button,
     export_button: gtk::Button,
+    export_action_summary_label: gtk::Label,
+    quality_scale: gtk::Scale,
     quality_spin: gtk::SpinButton,
     width_spin: gtk::SpinButton,
     height_spin: gtk::SpinButton,
@@ -427,7 +432,8 @@ pub struct AppWidgets {
     cr_threshold_spin: gtk::SpinButton,
     cr_size_spin: gtk::SpinButton,
     loop_spin: gtk::SpinButton,
-    overwrite_check: gtk::CheckButton,
+    loop_count_combo: gtk::ComboBoxText,
+    overwrite_switch: gtk::Switch,
     fit_mode_combo: gtk::ComboBoxText,
     raw_args_entry: gtk::Entry,
     command_preview_label: gtk::Label,
@@ -457,8 +463,8 @@ impl Component for AppModel {
     fn init_root() -> Self::Root {
         gtk::Window::builder()
             .title("AWEBPinator")
-            .default_width(1280)
-            .default_height(760)
+            .default_width(1180)
+            .default_height(720)
             .resizable(true)
             .build()
     }
@@ -493,7 +499,7 @@ impl Component for AppModel {
             status,
             ui_preferences: ui_preferences.clone(),
             layout_mode: layout_mode_for_width(1280),
-            active_tab: WorkflowTab::Edit,
+            active_tab: WorkflowTab::Organize,
             advanced_mode: ui_preferences.advanced_mode,
             loop_method: LoopMethod::PingPong,
             loop_repeats: 1,
@@ -541,7 +547,6 @@ impl Component for AppModel {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .margin_top(12)
             .margin_bottom(12)
             .margin_start(12)
             .margin_end(12)
@@ -549,29 +554,36 @@ impl Component for AppModel {
         root.add_css_class("app-shell");
         window.set_child(Some(&root));
 
-        let header_shell = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .build();
+        let header_handle = gtk::WindowHandle::new();
         let header = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
+            .margin_top(6)
+            .margin_bottom(6)
+            .margin_start(8)
+            .margin_end(8)
             .build();
         header.add_css_class("top-shell");
         let import_button =
             build_labeled_button("Import Images", "folder-open-symbolic", "icon-tone-cyan");
-        import_button.add_css_class("suggested-action");
         let open_project_button =
             build_labeled_button("Open Project", "document-open-symbolic", "icon-tone-amber");
         let save_project_button =
             build_labeled_button("Save Project", "document-save-symbolic", "icon-tone-green");
-        let header_actions = gtk::Box::builder()
+        let run_diagnostics_button =
+            build_labeled_button("Diagnostics", "system-run-symbolic", "icon-tone-coral");
+        let window_controls_start = gtk::WindowControls::builder()
+            .side(gtk::PackType::Start)
+            .build();
+        let window_controls_end = gtk::WindowControls::builder()
+            .side(gtk::PackType::End)
+            .build();
+        let header_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .hexpand(true)
             .build();
-        for button in [&import_button, &open_project_button, &save_project_button] {
-            header_actions.append(button);
-        }
+        header_left.append(&window_controls_start);
 
         let title_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -581,11 +593,7 @@ impl Component for AppModel {
         let title_label = gtk::Label::new(Some("AWEBPinator"));
         title_label.add_css_class("title-2");
         title_label.set_halign(gtk::Align::Center);
-        let subtitle_label =
-            helper_label("A simple way to turn image sequences into animated WebPs.");
-        subtitle_label.set_halign(gtk::Align::Center);
         title_box.append(&title_label);
-        title_box.append(&subtitle_label);
 
         let advanced_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -598,11 +606,46 @@ impl Component for AppModel {
         set_accessible_label(&advanced_switch, "Advanced mode");
         advanced_box.append(&advanced_label);
         advanced_box.append(&advanced_switch);
+        let menu_button = gtk::MenuButton::new();
+        set_accessible_label(&menu_button, "Secondary actions");
+        menu_button.add_css_class("pill-button");
+        menu_button.set_icon_name("open-menu-symbolic");
+        let secondary_menu = gtk::Popover::new();
+        let secondary_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .margin_top(10)
+            .margin_bottom(10)
+            .margin_start(10)
+            .margin_end(10)
+            .width_request(220)
+            .build();
+        for button in [
+            &import_button,
+            &open_project_button,
+            &save_project_button,
+            &run_diagnostics_button,
+        ] {
+            button.add_css_class("menu-action");
+            secondary_actions.append(button);
+        }
+        secondary_menu.set_child(Some(&secondary_actions));
+        menu_button.set_popover(Some(&secondary_menu));
+        let header_right = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .hexpand(true)
+            .halign(gtk::Align::End)
+            .build();
+        header_right.append(&advanced_box);
+        header_right.append(&menu_button);
+        header_right.append(&window_controls_end);
 
-        header.append(&header_actions);
+        header.append(&header_left);
         header.append(&title_box);
-        header.append(&advanced_box);
-        header_shell.append(&header);
+        header.append(&header_right);
+        header_handle.set_child(Some(&header));
+        window.set_titlebar(Some(&header_handle));
 
         let tab_bar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -610,24 +653,26 @@ impl Component for AppModel {
             .halign(gtk::Align::Center)
             .build();
         tab_bar.add_css_class("workflow-tabs");
+        let tab_organize_button =
+            build_tab_button("Organize", "view-grid-symbolic", "icon-tone-cyan");
         let tab_edit_button = build_tab_button("Edit", "document-edit-symbolic", "icon-tone-cyan");
         let tab_loop_button = build_tab_button("Loop", "view-refresh-symbolic", "icon-tone-amber");
         let tab_export_button = build_tab_button("Export", "mail-send-symbolic", "icon-tone-green");
-        let tab_diagnostics_button = build_tab_button(
-            "Diagnostics",
-            "dialog-information-symbolic",
-            "icon-tone-coral",
-        );
         for button in [
+            &tab_organize_button,
             &tab_edit_button,
             &tab_loop_button,
             &tab_export_button,
-            &tab_diagnostics_button,
         ] {
             tab_bar.append(button);
         }
-        header_shell.append(&tab_bar);
-        root.append(&header_shell);
+        let tab_scroller = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Automatic)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_height(48)
+            .child(&tab_bar)
+            .build();
+        root.append(&tab_scroller);
 
         let workspace_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -654,7 +699,7 @@ impl Component for AppModel {
             .build();
         let preview_picture = gtk::Picture::new();
         set_accessible_label(&preview_picture, "Selected frame preview");
-        preview_picture.set_size_request(760, 440);
+        preview_picture.set_size_request(320, 200);
         preview_picture.set_can_shrink(true);
         preview_picture.set_hexpand(true);
         preview_picture.set_vexpand(true);
@@ -677,9 +722,49 @@ impl Component for AppModel {
             .hexpand(true)
             .vexpand(true)
             .transition_type(gtk::StackTransitionType::Crossfade)
-            .width_request(420)
             .build();
         workspace_box.append(&page_stack);
+
+        let organize_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .build();
+        organize_page.append(&page_heading(
+            "Organize Frames",
+            "Import images, arrange the timeline, and prepare the sequence.",
+        ));
+        let organize_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(10)
+            .homogeneous(true)
+            .build();
+        let organize_import_button =
+            build_labeled_button("Import Images", "folder-open-symbolic", "icon-tone-cyan");
+        let organize_open_button =
+            build_labeled_button("Open Project", "document-open-symbolic", "icon-tone-amber");
+        let organize_save_button =
+            build_labeled_button("Save Project", "document-save-symbolic", "icon-tone-green");
+        for button in [
+            &organize_import_button,
+            &organize_open_button,
+            &organize_save_button,
+        ] {
+            button.add_css_class("pill-button");
+            organize_actions.append(button);
+        }
+        organize_page.append(&section("Project", &organize_actions));
+        organize_page.append(&section(
+            "Selection",
+            &summary_label(
+                "Select frames in the timeline below. Drag thumbnails to reorder frames.",
+            ),
+        ));
+        let organize_scroll = page_scroller(&organize_page);
+        page_stack.add_titled(
+            &organize_scroll,
+            Some(WorkflowTab::Organize.stack_name()),
+            "Organize",
+        );
 
         let edit_page = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -905,7 +990,6 @@ impl Component for AppModel {
         let loop_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .width_request(320)
             .build();
         let loop_cards = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -987,7 +1071,7 @@ impl Component for AppModel {
             .build();
         let loop_preview_picture = gtk::Picture::new();
         set_accessible_label(&loop_preview_picture, "Loop preview");
-        loop_preview_picture.set_size_request(560, 320);
+        loop_preview_picture.set_size_request(320, 200);
         loop_preview_picture.set_can_shrink(true);
         loop_preview_picture.set_hexpand(true);
         loop_preview_picture.set_vexpand(true);
@@ -1010,34 +1094,58 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
-        export_page.append(&page_heading(
-            "Export Animated WebP",
-            "Pick a preset, confirm where to save it, and export with confidence.",
-        ));
         let export_body = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(12)
+            .spacing(16)
             .build();
         let export_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .width_request(320)
+            .hexpand(true)
+            .vexpand(true)
+            .build();
+        let export_preview_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        let export_preview_picture = gtk::Picture::new();
+        set_accessible_label(&export_preview_picture, "Export preview");
+        export_preview_picture.set_size_request(320, 200);
+        export_preview_picture.set_can_shrink(true);
+        export_preview_picture.set_hexpand(true);
+        export_preview_picture.set_vexpand(true);
+        export_preview_picture.add_css_class("preview-image");
+        install_preview_layout_watch(&export_preview_picture, WorkflowTab::Export, sender.clone());
+        let export_preview_intro = helper_label("This is an estimate of your exported file.");
+        let export_preview_meta = helper_label("Select a frame to preview it.");
+        export_preview_box.append(&export_preview_intro);
+        export_preview_box.append(&export_preview_picture);
+        export_preview_box.append(&export_preview_meta);
+        export_left.append(&section("Preview", &export_preview_box));
+
+        let export_right = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(12)
+            .build();
+        let preset_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
             .build();
         let preset_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(10)
+            .spacing(8)
             .homogeneous(true)
             .build();
         let export_preset_fast_button = build_choice_button(
             "Fast Preview",
             "Small file size for quick sharing.",
-            "media-playback-start-symbolic",
+            "weather-storm-symbolic",
             "icon-tone-cyan",
         );
         let export_preset_balanced_button = build_choice_button(
             "Balanced",
             "Good quality and size for most use cases.",
-            "emblem-ok-symbolic",
+            "balance-scale-symbolic",
             "icon-tone-green",
         );
         let export_preset_high_button = build_choice_button(
@@ -1049,7 +1157,7 @@ impl Component for AppModel {
         let export_preset_lossless_button = build_choice_button(
             "Lossless",
             "Maximum quality with lossless output.",
-            "security-high-symbolic",
+            "media-playlist-repeat-symbolic",
             "icon-tone-coral",
         );
         for button in [
@@ -1060,29 +1168,39 @@ impl Component for AppModel {
         ] {
             preset_row.append(button);
         }
-        export_left.append(&preset_row);
+        preset_box.append(&preset_row);
+        preset_box.append(&helper_label(
+            "Balanced is recommended for most sharing and web use.",
+        ));
+        export_right.append(&section("Export Preset", &preset_box));
 
         let export_basic_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
+            .spacing(12)
             .build();
         let output_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
+            .spacing(0)
             .build();
+        output_row.add_css_class("combined-input");
         let output_entry = gtk::Entry::new();
         let suppress_output_entry_change = Rc::new(Cell::new(false));
         set_accessible_label(&output_entry, "Export output path");
         output_entry.set_placeholder_text(Some("/path/to/output.webp"));
         let browse_output_button =
-            build_labeled_button("Browse", "folder-open-symbolic", "icon-tone-cyan");
+            build_icon_button("folder-open-symbolic", "Choose export output folder");
         let export_size_combo = combo_for_dimension_preset();
         let width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
         let height_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
+        let quality_scale = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 100.0, 1.0);
+        quality_scale.set_draw_value(false);
+        quality_scale.set_hexpand(true);
         let quality_spin = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
+        quality_spin.set_width_chars(3);
         set_accessible_label(&export_size_combo, "Export size preset");
         set_accessible_label(&width_spin, "Export width");
         set_accessible_label(&height_spin, "Export height");
+        set_accessible_label(&quality_scale, "Export quality slider");
         set_accessible_label(&quality_spin, "Export quality");
         quality_spin.set_value(75.0);
         let lossless_check = gtk::CheckButton::with_label("Lossless");
@@ -1094,9 +1212,12 @@ impl Component for AppModel {
         set_accessible_label(&cr_size_spin, "Conditional replenishment block size");
         cr_size_spin.set_value(16.0);
         let loop_spin = gtk::SpinButton::with_range(0.0, 9999.0, 1.0);
+        let loop_count_combo = combo_for_loop_count();
         set_accessible_label(&loop_spin, "Export loop count");
-        let overwrite_check = gtk::CheckButton::with_label("Overwrite");
-        overwrite_check.set_active(true);
+        set_accessible_label(&loop_count_combo, "Export loop count");
+        let overwrite_switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
+        overwrite_switch.set_active(true);
+        set_accessible_label(&overwrite_switch, "Overwrite existing export");
         let fit_mode_combo = combo_for_fit_mode();
         let raw_args_entry = gtk::Entry::new();
         set_accessible_label(&fit_mode_combo, "Export fit mode");
@@ -1111,16 +1232,48 @@ impl Component for AppModel {
             build_labeled_button("Preview Export", "view-preview-symbolic", "icon-tone-amber");
         output_row.append(&output_entry);
         output_row.append(&browse_output_button);
-        let basic_grid = gtk::Grid::builder()
-            .column_spacing(8)
-            .row_spacing(8)
+        let quality_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
             .build();
-        basic_grid.attach(&gtk::Label::new(Some("Export Size")), 0, 0, 1, 1);
-        basic_grid.attach(&export_size_combo, 1, 0, 1, 1);
-        attach_labeled_spin(&basic_grid, "Quality", &quality_spin, 0, 1);
-        attach_labeled_spin(&basic_grid, "Loop Count", &loop_spin, 1, 1);
-        basic_grid.attach(&overwrite_check, 0, 3, 1, 1);
-        basic_grid.attach(&lossless_check, 1, 3, 1, 1);
+        quality_row.append(&quality_scale);
+        quality_row.append(&quality_spin);
+        export_basic_box.append(&settings_row(
+            "Output File",
+            "Where should we save your file?",
+            &output_row,
+        ));
+        export_basic_box.append(&settings_row(
+            "Export Size",
+            "Choose the size of your export.",
+            &export_size_combo,
+        ));
+        export_basic_box.append(&settings_row(
+            "Quality",
+            "Adjust quality. Higher means better quality and larger file size.",
+            &quality_row,
+        ));
+        export_basic_box.append(&settings_row(
+            "Loop Count",
+            "How many times should the animation loop? 0 = infinite loop.",
+            &loop_count_combo,
+        ));
+        export_basic_box.append(&settings_row(
+            "Overwrite Existing",
+            "Replace the file if it already exists.",
+            &overwrite_switch,
+        ));
+        export_right.append(&section("Export Settings", &export_basic_box));
+
+        let export_summary_label = summary_label("No frames imported yet.");
+        export_right.append(&section("Export Summary", &export_summary_label));
+
+        let export_action_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        let export_action_summary_label =
+            summary_label("Add frames and choose an output file to export.");
         let export_action_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -1129,37 +1282,9 @@ impl Component for AppModel {
         export_button.add_css_class("suggested-action");
         export_action_row.append(&preview_export_button);
         export_action_row.append(&export_button);
-        export_basic_box.append(&gtk::Label::new(Some("Output File")));
-        export_basic_box.append(&output_row);
-        export_basic_box.append(&basic_grid);
-        export_basic_box.append(&export_action_row);
-        export_left.append(&section("Export Settings", &export_basic_box));
-
-        let export_right = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(12)
-            .hexpand(true)
-            .build();
-        let export_preview_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .build();
-        let export_preview_picture = gtk::Picture::new();
-        set_accessible_label(&export_preview_picture, "Export preview");
-        export_preview_picture.set_size_request(560, 320);
-        export_preview_picture.set_can_shrink(true);
-        export_preview_picture.set_hexpand(true);
-        export_preview_picture.set_vexpand(true);
-        install_preview_layout_watch(&export_preview_picture, WorkflowTab::Export, sender.clone());
-        let export_preview_meta =
-            helper_label("This is an estimate of your exported file using the current settings.");
-        export_preview_box.append(&export_preview_picture);
-        export_preview_box.append(&export_preview_meta);
-        export_right.append(&section("Preview", &export_preview_box));
-
-        let export_summary_label =
-            summary_label("Balanced is recommended for most sharing and web use.");
-        export_right.append(&section("Export Summary", &export_summary_label));
+        export_action_box.append(&export_action_summary_label);
+        export_action_box.append(&export_action_row);
+        export_right.append(&section("Export Action", &export_action_box));
 
         let export_advanced_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1183,12 +1308,15 @@ impl Component for AppModel {
         command_preview_label.set_xalign(0.0);
         command_preview_label.set_wrap(true);
         command_preview_label.set_selectable(true);
-        export_advanced_box.append(&helper_label("Advanced mode keeps encoder controls, fit behavior, and raw ffmpeg arguments available inline."));
+        export_advanced_box.append(&helper_label(
+            "Show advanced export settings and encoder options.",
+        ));
+        export_advanced_box.append(&lossless_check);
         export_advanced_box.append(&export_grid);
         export_advanced_box.append(&section("Effective Command", &command_preview_label));
-        export_left.append(&section("Advanced Export Controls", &export_advanced_box));
-        export_body.append(&export_right);
         export_body.append(&export_left);
+        export_right.append(&section("Advanced Options", &export_advanced_box));
+        export_body.append(&export_right);
         export_page.append(&export_body);
         let export_scroll = page_scroller(&export_page);
         page_stack.add_titled(
@@ -1205,10 +1333,10 @@ impl Component for AppModel {
             "Diagnostics",
             "Run a quick health check when export fails or something feels off.",
         ));
-        let run_diagnostics_button =
+        let diagnostics_page_button =
             build_labeled_button("Run Diagnostics", "system-run-symbolic", "icon-tone-coral");
-        run_diagnostics_button.add_css_class("suggested-action");
-        diagnostics_page.append(&run_diagnostics_button);
+        diagnostics_page_button.add_css_class("suggested-action");
+        diagnostics_page.append(&diagnostics_page_button);
         let diagnostics_overview_label =
             summary_label("Ready to check ffmpeg and ffprobe availability.");
         diagnostics_page.append(&section("Health", &diagnostics_overview_label));
@@ -1319,9 +1447,10 @@ impl Component for AppModel {
         timeline_toolbar.append(&spacer);
         timeline_toolbar.append(&transport_box);
         let timeline_hint = gtk::Label::new(Some(
-            "Timeline: drag thumbnails to reorder frames. Select a range here before editing, looping, or exporting.",
+            "Timeline (0 frames) · Tip: Drag thumbnails to reorder frames.",
         ));
         timeline_hint.set_xalign(0.0);
+        timeline_hint.add_css_class("section-title");
         let timeline_strip = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
@@ -1352,7 +1481,6 @@ impl Component for AppModel {
             .hexpand(true)
             .show_text(true)
             .visible(true)
-            .width_request(260)
             .valign(gtk::Align::Center)
             .build();
         let status_label = gtk::Label::new(None);
@@ -1430,6 +1558,13 @@ impl Component for AppModel {
             window,
             move |_| open_image_dialog(&window, sender.clone())
         ));
+        organize_import_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            window,
+            move |_| open_image_dialog(&window, sender.clone())
+        ));
         open_project_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -1437,7 +1572,21 @@ impl Component for AppModel {
             window,
             move |_| open_project_dialog(&window, sender.clone())
         ));
+        organize_open_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            window,
+            move |_| open_project_dialog(&window, sender.clone())
+        ));
         save_project_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            window,
+            move |_| save_project_dialog(&window, sender.clone())
+        ));
+        organize_save_button.connect_clicked(clone!(
             #[strong]
             sender,
             #[strong]
@@ -1459,6 +1608,11 @@ impl Component for AppModel {
                 false.into()
             }
         ));
+        tab_organize_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            move |_| sender.input(AppMsg::SetActiveTab(WorkflowTab::Organize))
+        ));
         tab_edit_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -1474,10 +1628,13 @@ impl Component for AppModel {
             sender,
             move |_| sender.input(AppMsg::SetActiveTab(WorkflowTab::Export))
         ));
-        tab_diagnostics_button.connect_clicked(clone!(
+        run_diagnostics_button.connect_clicked(clone!(
             #[strong]
             sender,
-            move |_| sender.input(AppMsg::SetActiveTab(WorkflowTab::Diagnostics))
+            move |_| {
+                sender.input(AppMsg::SetActiveTab(WorkflowTab::Diagnostics));
+                sender.input(AppMsg::RunDiagnostics);
+            }
         ));
 
         duplicate_button.connect_clicked(clone!(
@@ -1827,6 +1984,11 @@ impl Component for AppModel {
             sender,
             move |spin| sender.input(AppMsg::SetQuality(spin.value() as f32))
         ));
+        quality_scale.connect_value_changed(clone!(
+            #[strong]
+            sender,
+            move |scale| sender.input(AppMsg::SetQuality(scale.value() as f32))
+        ));
         lossless_check.connect_toggled(clone!(
             #[strong]
             sender,
@@ -1852,10 +2014,18 @@ impl Component for AppModel {
             sender,
             move |spin| sender.input(AppMsg::SetLoopCount(spin.value() as u32))
         ));
-        overwrite_check.connect_toggled(clone!(
+        loop_count_combo.connect_changed(clone!(
             #[strong]
             sender,
-            move |check| sender.input(AppMsg::SetOverwrite(check.is_active()))
+            move |combo| sender.input(AppMsg::SetLoopCount(loop_count_from_combo(combo)))
+        ));
+        overwrite_switch.connect_state_set(clone!(
+            #[strong]
+            sender,
+            move |_, state| {
+                sender.input(AppMsg::SetOverwrite(state));
+                false.into()
+            }
         ));
         fit_mode_combo.connect_changed(clone!(
             #[strong]
@@ -1877,7 +2047,7 @@ impl Component for AppModel {
             sender,
             move |_| sender.input(AppMsg::ExportNow)
         ));
-        run_diagnostics_button.connect_clicked(clone!(
+        diagnostics_page_button.connect_clicked(clone!(
             #[strong]
             sender,
             move |_| sender.input(AppMsg::RunDiagnostics)
@@ -1890,10 +2060,10 @@ impl Component for AppModel {
         let widgets = AppWidgets {
             workspace_box,
             content_stack: page_stack,
+            tab_organize_button,
             tab_edit_button,
             tab_loop_button,
             tab_export_button,
-            tab_diagnostics_button,
             advanced_switch,
             preview_panel,
             timeline_toolbar,
@@ -1901,7 +2071,8 @@ impl Component for AppModel {
             loop_body,
             loop_settings_column: loop_left,
             export_body,
-            export_settings_column: export_left,
+            export_settings_column: export_right,
+            timeline_hint_label: timeline_hint,
             timeline_strip,
             timeline_power_box,
             nav_first_button,
@@ -1955,6 +2126,8 @@ impl Component for AppModel {
             edit_advanced_box,
             preview_export_button,
             export_button,
+            export_action_summary_label,
+            quality_scale,
             quality_spin,
             width_spin,
             height_spin,
@@ -1963,7 +2136,8 @@ impl Component for AppModel {
             cr_threshold_spin,
             cr_size_spin,
             loop_spin,
-            overwrite_check,
+            loop_count_combo,
+            overwrite_switch,
             fit_mode_combo,
             raw_args_entry,
             command_preview_label,
@@ -2568,6 +2742,10 @@ impl Component for AppModel {
                 widgets.footer_progress_bar.set_text(Some("Idle"));
             }
             widgets.footer_state_label.set_label(&readiness_text);
+            widgets.timeline_hint_label.set_label(&format!(
+                "Timeline ({} frames) · Tip: Drag thumbnails to reorder frames.",
+                frame_count
+            ));
             widgets
                 .preview_export_button
                 .set_sensitive(!self.export_completion_pending && has_frames);
@@ -2589,8 +2767,22 @@ impl Component for AppModel {
                 gtk::Orientation::Horizontal
             },
         );
-        set_box_orientation_if_needed(&widgets.loop_body, gtk::Orientation::Horizontal);
-        set_box_orientation_if_needed(&widgets.export_body, gtk::Orientation::Horizontal);
+        set_box_orientation_if_needed(
+            &widgets.loop_body,
+            if compact {
+                gtk::Orientation::Vertical
+            } else {
+                gtk::Orientation::Horizontal
+            },
+        );
+        set_box_orientation_if_needed(
+            &widgets.export_body,
+            if compact {
+                gtk::Orientation::Vertical
+            } else {
+                gtk::Orientation::Horizontal
+            },
+        );
         set_box_orientation_if_needed(
             &widgets.timeline_toolbar,
             if compact {
@@ -2600,29 +2792,23 @@ impl Component for AppModel {
             },
         );
         set_visible_if_needed(&widgets.timeline_toolbar_spacer, !compact);
-        set_width_request_if_needed(&widgets.content_stack, if compact { -1 } else { 420 });
-        set_width_request_if_needed(
-            &widgets.loop_settings_column,
-            if compact { 280 } else { 320 },
-        );
-        set_width_request_if_needed(
-            &widgets.export_settings_column,
-            if compact { 280 } else { 320 },
-        );
+        set_width_request_if_needed(&widgets.content_stack, -1);
+        set_width_request_if_needed(&widgets.loop_settings_column, -1);
+        set_width_request_if_needed(&widgets.export_settings_column, -1);
         set_size_request_if_needed(
             &widgets.preview_picture,
-            if compact { 560 } else { 760 },
-            if compact { 320 } else { 440 },
+            if compact { 260 } else { 320 },
+            if compact { 160 } else { 200 },
         );
         set_size_request_if_needed(
             &widgets.loop_preview_picture,
-            if compact { 480 } else { 560 },
-            if compact { 270 } else { 320 },
+            if compact { 260 } else { 320 },
+            if compact { 160 } else { 200 },
         );
         set_size_request_if_needed(
             &widgets.export_preview_picture,
-            if compact { 480 } else { 560 },
-            if compact { 270 } else { 320 },
+            if compact { 260 } else { 320 },
+            if compact { 160 } else { 200 },
         );
 
         set_stack_visible_child_name_if_needed(
@@ -2630,12 +2816,20 @@ impl Component for AppModel {
             self.active_tab.stack_name(),
         );
         set_switch_if_needed(&widgets.advanced_switch, self.advanced_mode);
-        set_visible_if_needed(&widgets.preview_panel, self.active_tab == WorkflowTab::Edit);
+        set_visible_if_needed(
+            &widgets.preview_panel,
+            matches!(self.active_tab, WorkflowTab::Organize | WorkflowTab::Edit),
+        );
         set_visible_if_needed(&widgets.edit_advanced_box, self.advanced_mode);
         set_visible_if_needed(&widgets.export_advanced_box, self.advanced_mode);
         set_visible_if_needed(&widgets.diagnostics_details_box, self.advanced_mode);
         set_visible_if_needed(&widgets.timeline_power_box, self.advanced_mode);
 
+        set_widget_css_class(
+            &widgets.tab_organize_button,
+            "workflow-tab-active",
+            self.active_tab == WorkflowTab::Organize,
+        );
         set_widget_css_class(
             &widgets.tab_edit_button,
             "workflow-tab-active",
@@ -2651,12 +2845,6 @@ impl Component for AppModel {
             "workflow-tab-active",
             self.active_tab == WorkflowTab::Export,
         );
-        set_widget_css_class(
-            &widgets.tab_diagnostics_button,
-            "workflow-tab-active",
-            self.active_tab == WorkflowTab::Diagnostics,
-        );
-
         widgets
             .selection_label
             .set_label(&self.selection_summary_text());
@@ -2676,6 +2864,10 @@ impl Component for AppModel {
         widgets.footer_progress_bar.set_fraction(0.0);
         widgets.footer_progress_bar.set_text(Some("Idle"));
         widgets.footer_state_label.set_label(&readiness_text);
+        widgets.timeline_hint_label.set_label(&format!(
+            "Timeline ({} frames) · Tip: Drag thumbnails to reorder frames.",
+            frame_count
+        ));
         widgets
             .diagnostics_overview_label
             .set_label(&self.diagnostics_overview_text());
@@ -2858,6 +3050,7 @@ impl Component for AppModel {
             "choice-card-active",
             self.export_profile.preset == ExportPreset::Lossless,
         );
+        set_scale_if_needed(&widgets.quality_scale, self.export_profile.quality as f64);
         set_spin_if_needed(&widgets.quality_spin, self.export_profile.quality as f64);
         set_spin_if_needed(
             &widgets.width_spin,
@@ -2874,7 +3067,8 @@ impl Component for AppModel {
         );
         set_spin_if_needed(&widgets.cr_size_spin, self.export_profile.cr_size as f64);
         set_spin_if_needed(&widgets.loop_spin, self.export_profile.loop_count as f64);
-        set_check_if_needed(&widgets.overwrite_check, self.export_profile.overwrite);
+        sync_combo_active_loop_count(&widgets.loop_count_combo, self.export_profile.loop_count);
+        set_switch_if_needed(&widgets.overwrite_switch, self.export_profile.overwrite);
         if widgets.raw_args_entry.text().as_str() != self.export_profile.raw_args {
             widgets
                 .raw_args_entry
@@ -2883,6 +3077,9 @@ impl Component for AppModel {
         widgets
             .export_summary_label
             .set_label(&self.export_summary_text());
+        widgets
+            .export_action_summary_label
+            .set_label(&self.export_action_text());
         widgets.preview_export_button.set_sensitive(has_frames);
         widgets
             .export_button
@@ -3589,14 +3786,79 @@ impl AppModel {
             .iter()
             .filter(|frame| frame.enabled)
             .count();
+        let duration_ms = self.total_duration_ms();
+        let fps = if frame_count > 0 && duration_ms > 0 {
+            format!(
+                "{:.0} fps",
+                frame_count as f64 / (duration_ms as f64 / 1000.0)
+            )
+        } else {
+            "-- fps".to_string()
+        };
+        let loop_count = if self.export_profile.loop_count == 0 {
+            "Infinite".to_string()
+        } else {
+            self.export_profile.loop_count.to_string()
+        };
+        let estimate = self.estimated_file_size_text(frame_count, duration_ms);
         format!(
-            "Format: Animated WebP\nDimensions: {}\nFrame Count: {}\nDuration: {}\nLoop Count: {}\nQuality: {:.0}",
+            "Format              Animated WebP\nDimensions          {}\nFrame Count         {} frames\nDuration            {} ({})\nLoop Count          {}\nQuality             {:.0}\nEstimated File Size {}",
             self.export_dimensions_text(),
             frame_count,
-            format_duration_ms(self.total_duration_ms()),
-            self.export_profile.loop_count,
-            self.export_profile.quality
+            format_duration_ms(duration_ms),
+            fps,
+            loop_count,
+            self.export_profile.quality,
+            estimate
         )
+    }
+
+    fn export_action_text(&self) -> String {
+        if self.export_in_progress {
+            return "Exporting\nYour animated WebP is being created.".to_string();
+        }
+        if self.export_completion_pending {
+            return "Finishing Export\nUpdating the interface after export.".to_string();
+        }
+        if self.timeline.is_empty() {
+            return "No Frames Imported\nImport images before exporting.".to_string();
+        }
+        if self.last_output_path.is_none() {
+            return "Missing Output File\nChoose where to save your animated WebP.".to_string();
+        }
+        if self.status.starts_with("Export failed") {
+            return "Export Failed\nOpen Diagnostics for technical details.".to_string();
+        }
+        if self.status.starts_with("Exported ") {
+            return "Export Complete\nYour animated WebP was created.".to_string();
+        }
+        "Ready to Export\nEverything looks good. Click export to create your animated WebP."
+            .to_string()
+    }
+
+    fn estimated_file_size_text(&self, frame_count: usize, duration_ms: u64) -> String {
+        if frame_count == 0 {
+            return "--".to_string();
+        }
+        let dimensions_factor = match (
+            self.export_profile.output_width,
+            self.export_profile.output_height,
+        ) {
+            (Some(width), Some(height)) => {
+                (u64::from(width) * u64::from(height)) as f64 / 921_600.0
+            }
+            _ => 1.0,
+        };
+        let duration_factor = (duration_ms as f64 / 1000.0).max(0.2);
+        let quality_factor = (self.export_profile.quality as f64 / 80.0).clamp(0.35, 1.4);
+        let lossless_factor = if self.export_profile.lossless {
+            2.0
+        } else {
+            1.0
+        };
+        let mb = (duration_factor * dimensions_factor * quality_factor * lossless_factor * 0.85)
+            .max(0.1);
+        format!("~ {:.1} MB", mb)
     }
 
     fn loop_preview_meta_text(&self) -> String {
@@ -3611,23 +3873,17 @@ impl AppModel {
     }
 
     fn export_preview_meta_text(&self) -> String {
-        let output = self
-            .last_output_path
-            .as_ref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "Choose an output file to finish exporting.".to_string());
         let preview_state = if self.export_preview_path.is_some() {
             "Preview reflects the current export sizing."
         } else {
             "Click Preview Export to render with the current export sizing."
         };
         format!(
-            "{}\nExport size: {} • fit {}\n{}\nOutput: {}",
-            self.preview_meta_text(),
+            "{}\nExport size: {} • fit {}\n{}",
+            self.preview_user_meta_text(),
             self.export_dimensions_text(),
             self.export_profile.fit_mode,
-            preview_state,
-            output
+            preview_state
         )
     }
 
@@ -3704,6 +3960,18 @@ impl AppModel {
             frame.transform_spec.fit_mode,
             frame.transform_spec.flip_horizontal,
             frame.transform_spec.flip_vertical
+        )
+    }
+
+    fn preview_user_meta_text(&self) -> String {
+        let Some(frame) = self.primary_selected_frame() else {
+            return "Select a frame to preview it.".to_string();
+        };
+        format!(
+            "{}\nExport dimensions: {}\nFrame duration: {} ms",
+            frame.file_name(),
+            self.export_dimensions_text(),
+            frame.duration_ms
         )
     }
 
@@ -3796,10 +4064,27 @@ fn build_timeline_tile(
     ));
     tile.add_controller(click);
 
+    let badge_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(6)
+        .build();
+    let badge = gtk::Label::new(Some(&format!("{:03}", index + 1)));
+    badge.add_css_class("timeline-badge");
+    let badge_spacer = gtk::Box::builder().hexpand(true).build();
+    badge_row.append(&badge);
+    badge_row.append(&badge_spacer);
+    if selected {
+        let check = gtk::Label::new(Some("✓"));
+        check.add_css_class("timeline-check");
+        badge_row.append(&check);
+    }
+    tile.append(&badge_row);
+
     let picture = gtk::Picture::new();
     set_picture_from_path(&picture, frame.thumbnail_path.as_deref());
     picture.set_size_request(120, 120);
     picture.set_can_shrink(true);
+    picture.add_css_class("timeline-picture");
     tile.append(&picture);
 
     let title = gtk::Label::new(Some(&format!("Frame {:03}", index + 1)));
@@ -3810,6 +4095,7 @@ fn build_timeline_tile(
     subtitle.set_xalign(0.0);
     subtitle.set_wrap(true);
     subtitle.set_max_width_chars(14);
+    subtitle.add_css_class("timeline-filename");
     tile.append(&subtitle);
 
     let drop_target = gtk::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
@@ -3883,6 +4169,15 @@ fn combo_for_encoder_preset() -> gtk::ComboBoxText {
     combo
 }
 
+fn combo_for_loop_count() -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    for value in ["0 (Infinite)", "1", "2", "3", "Custom"] {
+        combo.append_text(value);
+    }
+    combo.set_active(Some(0));
+    combo
+}
+
 fn fit_mode_from_combo(combo: &gtk::ComboBoxText) -> FitMode {
     match combo.active_text().as_deref() {
         Some("Cover") => FitMode::Cover,
@@ -3908,6 +4203,16 @@ fn encoder_from_combo(combo: &gtk::ComboBoxText) -> EncoderPreset {
         Some("Icon") => EncoderPreset::Icon,
         Some("Text") => EncoderPreset::Text,
         _ => EncoderPreset::Default,
+    }
+}
+
+fn loop_count_from_combo(combo: &gtk::ComboBoxText) -> u32 {
+    match combo.active_text().as_deref() {
+        Some("1") => 1,
+        Some("2") => 2,
+        Some("3") => 3,
+        Some("Custom") => 0,
+        _ => 0,
     }
 }
 
@@ -3948,6 +4253,19 @@ fn sync_combo_active_encoder_preset(combo: &gtk::ComboBoxText, preset: EncoderPr
     }
 }
 
+fn sync_combo_active_loop_count(combo: &gtk::ComboBoxText, loop_count: u32) {
+    let target = match loop_count {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        _ => 4,
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
+}
+
 fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
     let frame = gtk::Frame::builder().child(child).build();
     frame.add_css_class("content-card");
@@ -3968,6 +4286,29 @@ fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
     header.append(&label);
     frame.set_label_widget(Some(&header));
     frame
+}
+
+fn settings_row<W: IsA<gtk::Widget>>(title: &str, helper: &str, control: &W) -> gtk::Box {
+    let row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(12)
+        .build();
+    row.add_css_class("settings-row");
+    let copy = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(3)
+        .hexpand(true)
+        .build();
+    let title_label = gtk::Label::new(Some(title));
+    title_label.set_xalign(0.0);
+    title_label.add_css_class("settings-title");
+    let helper_label = helper_label(helper);
+    copy.append(&title_label);
+    copy.append(&helper_label);
+    control.as_ref().set_hexpand(true);
+    row.append(&copy);
+    row.append(control);
+    row
 }
 
 fn build_tab_button(label: &str, icon_name: &str, icon_tone_class: &str) -> gtk::Button {
@@ -4107,9 +4448,8 @@ fn section_header_icon(title: &str) -> (&'static str, &'static str) {
 
 fn page_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
     gtk::ScrolledWindow::builder()
-        .hscrollbar_policy(gtk::PolicyType::Never)
+        .hscrollbar_policy(gtk::PolicyType::Automatic)
         .vscrollbar_policy(gtk::PolicyType::Automatic)
-        .min_content_width(420)
         .child(child)
         .build()
 }
@@ -4123,7 +4463,7 @@ fn set_widget_css_class(widget: &impl IsA<gtk::Widget>, class_name: &str, enable
 }
 
 fn layout_mode_for_width(width: i32) -> LayoutMode {
-    if width > 0 && width < 1180 {
+    if width > 0 && width < 980 {
         LayoutMode::Compact
     } else {
         LayoutMode::Regular
@@ -4469,15 +4809,19 @@ fn install_app_css(window: &gtk::Window) {
         .timeline-shell,
         .status-shell {
             background: #171d25;
-            border-radius: 16px;
-            padding: 10px;
-            box-shadow: 0 14px 32px rgba(0, 0, 0, 0.24);
+            border: 1px solid rgba(91, 115, 150, 0.24);
+            border-radius: 10px;
+            padding: 12px;
+            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.20);
+        }
+        .top-shell {
+            box-shadow: none;
         }
         .content-card {
-            border-radius: 16px;
-            background: #171d25;
-            padding: 10px;
-            box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+            border-radius: 12px;
+            background: #18202a;
+            padding: 12px;
+            box-shadow: 0 8px 18px rgba(0, 0, 0, 0.18);
         }
         .section-card {
             border-color: rgba(87, 116, 156, 0.36);
@@ -4496,20 +4840,30 @@ fn install_app_css(window: &gtk::Window) {
         .workflow-tab,
         .pill-button,
         .choice-card {
-            border-radius: 14px;
+            border-radius: 10px;
             background: #1d2430;
             border: 1px solid #2c3747;
         }
-        .workflow-tab-active,
+        .workflow-tab-active {
+            background: transparent;
+            border-color: transparent;
+            border-bottom: 3px solid #5a9bff;
+            color: #7fb2ff;
+            font-weight: 700;
+        }
         .pill-button-active,
         .choice-card-active {
-            background: #163761;
+            background: #1b2b42;
             border-color: #4f8fe6;
-            color: white;
+            color: #eef6ff;
         }
         .choice-card {
             padding: 0;
-            min-height: 176px;
+            min-height: 112px;
+            min-width: 72px;
+        }
+        .choice-card-active {
+            box-shadow: inset 0 0 0 1px #5a9bff;
         }
         .page-heading {
             margin-bottom: 2px;
@@ -4547,15 +4901,39 @@ fn install_app_css(window: &gtk::Window) {
         .workflow-tab-active .button-leading-icon,
         .pill-button-active .button-leading-icon,
         .choice-card-active .button-leading-icon {
-            color: #ecf1f8;
+            color: #7fb2ff;
+        }
+        .preview-image,
+        .timeline-picture {
+            border-radius: 10px;
+            background: #10151c;
+        }
+        .settings-row {
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(91, 115, 150, 0.18);
+        }
+        .settings-title {
+            font-weight: 700;
+            color: #f2f6fb;
+        }
+        .combined-input entry {
+            border-top-right-radius: 0;
+            border-bottom-right-radius: 0;
+        }
+        .combined-input button {
+            border-top-left-radius: 0;
+            border-bottom-left-radius: 0;
+        }
+        .menu-action {
+            border-radius: 10px;
         }
         .dim-label {
             color: #9da9ba;
         }
         .summary-blurb {
-            background: linear-gradient(180deg, rgba(39, 53, 72, 0.94), rgba(28, 37, 49, 0.94));
+            background: #202a36;
             border: 1px solid rgba(99, 131, 175, 0.24);
-            border-radius: 14px;
+            border-radius: 10px;
             padding: 12px 14px;
             color: #cfd9e7;
         }
@@ -4565,13 +4943,13 @@ fn install_app_css(window: &gtk::Window) {
             padding: 6px 10px;
         }
         .timeline-tile {
-            border-radius: 14px;
+            border-radius: 10px;
             padding: 6px;
             border: 2px solid transparent;
             background: #1b222c;
         }
         .timeline-tile-selected {
-            background: #163761;
+            background: #1b2b42;
             border-color: #4f8fe6;
             color: white;
         }
@@ -4585,6 +4963,21 @@ fn install_app_css(window: &gtk::Window) {
         .timeline-drop-after {
             border-right-color: #4f8fe6;
             box-shadow: inset -4px 0 0 #2469d9;
+        }
+        .timeline-badge,
+        .timeline-check {
+            background: #223148;
+            border-radius: 999px;
+            padding: 2px 7px;
+            color: #d8e6f8;
+            font-weight: 700;
+        }
+        .timeline-check {
+            background: #2d6cdf;
+            color: white;
+        }
+        .timeline-filename {
+            color: #9da9ba;
         }
         ",
     );
@@ -4717,6 +5110,12 @@ fn crop_anchor_offset(available: u32, anchor: CropAnchor) -> u32 {
 fn set_spin_if_needed(spin: &gtk::SpinButton, value: f64) {
     if (spin.value() - value).abs() > f64::EPSILON {
         spin.set_value(value);
+    }
+}
+
+fn set_scale_if_needed(scale: &gtk::Scale, value: f64) {
+    if (scale.value() - value).abs() > f64::EPSILON {
+        scale.set_value(value);
     }
 }
 
