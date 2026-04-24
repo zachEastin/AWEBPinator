@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Keep Loop and Export previews on the left
+
+- Status: Done
+- Request: Change the UI so the preview is always on the left and settings are always on the right, specifically in the Loop and Export tabs.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Loop and Export now append preview/summary columns before settings columns, keep those tab bodies horizontal in compact and regular modes, and constrain the settings columns while allowing previews to expand.
+
 ### 2026-04-24 - Remove export debug logs and reports
 
 - Status: Done

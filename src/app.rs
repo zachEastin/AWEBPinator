@@ -363,9 +363,9 @@ pub struct AppWidgets {
     timeline_toolbar: gtk::Box,
     timeline_toolbar_spacer: gtk::Box,
     loop_body: gtk::Box,
-    loop_right: gtk::Box,
+    loop_settings_column: gtk::Box,
     export_body: gtk::Box,
-    export_right: gtk::Box,
+    export_settings_column: gtk::Box,
     timeline_strip: gtk::Box,
     timeline_power_box: gtk::Box,
     nav_first_button: gtk::Button,
@@ -905,7 +905,7 @@ impl Component for AppModel {
         let loop_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .hexpand(true)
+            .width_request(320)
             .build();
         let loop_cards = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -979,7 +979,7 @@ impl Component for AppModel {
         let loop_right = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .width_request(320)
+            .hexpand(true)
             .build();
         let loop_preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1000,8 +1000,8 @@ impl Component for AppModel {
         let loop_summary_label =
             summary_label("Choose a loop method to preview the result of the current range.");
         loop_right.append(&section("Loop Summary", &loop_summary_label));
-        loop_body.append(&loop_left);
         loop_body.append(&loop_right);
+        loop_body.append(&loop_left);
         loop_page.append(&loop_body);
         let loop_scroll = page_scroller(&loop_page);
         page_stack.add_titled(&loop_scroll, Some(WorkflowTab::Loop.stack_name()), "Loop");
@@ -1021,7 +1021,7 @@ impl Component for AppModel {
         let export_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .hexpand(true)
+            .width_request(320)
             .build();
         let preset_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1138,7 +1138,7 @@ impl Component for AppModel {
         let export_right = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
-            .width_request(320)
+            .hexpand(true)
             .build();
         let export_preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1187,8 +1187,8 @@ impl Component for AppModel {
         export_advanced_box.append(&export_grid);
         export_advanced_box.append(&section("Effective Command", &command_preview_label));
         export_left.append(&section("Advanced Export Controls", &export_advanced_box));
-        export_body.append(&export_left);
         export_body.append(&export_right);
+        export_body.append(&export_left);
         export_page.append(&export_body);
         let export_scroll = page_scroller(&export_page);
         page_stack.add_titled(
@@ -1899,9 +1899,9 @@ impl Component for AppModel {
             timeline_toolbar,
             timeline_toolbar_spacer: spacer,
             loop_body,
-            loop_right,
+            loop_settings_column: loop_left,
             export_body,
-            export_right,
+            export_settings_column: export_left,
             timeline_strip,
             timeline_power_box,
             nav_first_button,
@@ -2386,28 +2386,30 @@ impl Component for AppModel {
                 } = export_start_request;
 
                 let thread_name = "export-worker".to_string();
-                match thread::Builder::new().name(thread_name.clone()).spawn(move || {
-                    let result = export_animation_with_progress(
-                        &frames,
-                        &profile,
-                        &output_path,
-                        |progress| {
-                            if let Ok(mut state) = export_worker_state.lock() {
-                                state.progress = Some(ExportProgressState {
-                                    fraction: progress.fraction.clamp(0.0, 1.0),
-                                    detail: progress.detail,
-                                });
-                                state.version = state.version.saturating_add(1);
-                            }
-                        },
-                    )
-                    .map_err(|err| err.to_string());
+                match thread::Builder::new()
+                    .name(thread_name.clone())
+                    .spawn(move || {
+                        let result = export_animation_with_progress(
+                            &frames,
+                            &profile,
+                            &output_path,
+                            |progress| {
+                                if let Ok(mut state) = export_worker_state.lock() {
+                                    state.progress = Some(ExportProgressState {
+                                        fraction: progress.fraction.clamp(0.0, 1.0),
+                                        detail: progress.detail,
+                                    });
+                                    state.version = state.version.saturating_add(1);
+                                }
+                            },
+                        )
+                        .map_err(|err| err.to_string());
 
-                    if let Ok(mut state) = export_worker_state.lock() {
-                        state.result = Some(result);
-                        state.version = state.version.saturating_add(1);
-                    }
-                }) {
+                        if let Ok(mut state) = export_worker_state.lock() {
+                            state.result = Some(result);
+                            state.version = state.version.saturating_add(1);
+                        }
+                    }) {
                     Ok(_) => {}
                     Err(err) => {
                         self.export_in_progress = false;
@@ -2562,9 +2564,7 @@ impl Component for AppModel {
                         .set_text(Some("Preparing export..."));
                 }
             } else {
-                widgets
-                    .footer_progress_bar
-                    .set_fraction(0.0);
+                widgets.footer_progress_bar.set_fraction(0.0);
                 widgets.footer_progress_bar.set_text(Some("Idle"));
             }
             widgets.footer_state_label.set_label(&readiness_text);
@@ -2572,9 +2572,7 @@ impl Component for AppModel {
                 .preview_export_button
                 .set_sensitive(!self.export_completion_pending && has_frames);
             widgets.export_button.set_sensitive(
-                !self.export_completion_pending
-                    && has_frames
-                    && self.last_output_path.is_some(),
+                !self.export_completion_pending && has_frames && self.last_output_path.is_some(),
             );
             if self.export_completion_pending {
                 widgets.status_label.set_label(&self.status);
@@ -2591,22 +2589,8 @@ impl Component for AppModel {
                 gtk::Orientation::Horizontal
             },
         );
-        set_box_orientation_if_needed(
-            &widgets.loop_body,
-            if compact {
-                gtk::Orientation::Vertical
-            } else {
-                gtk::Orientation::Horizontal
-            },
-        );
-        set_box_orientation_if_needed(
-            &widgets.export_body,
-            if compact {
-                gtk::Orientation::Vertical
-            } else {
-                gtk::Orientation::Horizontal
-            },
-        );
+        set_box_orientation_if_needed(&widgets.loop_body, gtk::Orientation::Horizontal);
+        set_box_orientation_if_needed(&widgets.export_body, gtk::Orientation::Horizontal);
         set_box_orientation_if_needed(
             &widgets.timeline_toolbar,
             if compact {
@@ -2617,8 +2601,14 @@ impl Component for AppModel {
         );
         set_visible_if_needed(&widgets.timeline_toolbar_spacer, !compact);
         set_width_request_if_needed(&widgets.content_stack, if compact { -1 } else { 420 });
-        set_width_request_if_needed(&widgets.loop_right, if compact { -1 } else { 320 });
-        set_width_request_if_needed(&widgets.export_right, if compact { -1 } else { 320 });
+        set_width_request_if_needed(
+            &widgets.loop_settings_column,
+            if compact { 280 } else { 320 },
+        );
+        set_width_request_if_needed(
+            &widgets.export_settings_column,
+            if compact { 280 } else { 320 },
+        );
         set_size_request_if_needed(
             &widgets.preview_picture,
             if compact { 560 } else { 760 },
@@ -2635,7 +2625,10 @@ impl Component for AppModel {
             if compact { 270 } else { 320 },
         );
 
-        set_stack_visible_child_name_if_needed(&widgets.content_stack, self.active_tab.stack_name());
+        set_stack_visible_child_name_if_needed(
+            &widgets.content_stack,
+            self.active_tab.stack_name(),
+        );
         set_switch_if_needed(&widgets.advanced_switch, self.advanced_mode);
         set_visible_if_needed(&widgets.preview_panel, self.active_tab == WorkflowTab::Edit);
         set_visible_if_needed(&widgets.edit_advanced_box, self.advanced_mode);
@@ -2675,11 +2668,7 @@ impl Component for AppModel {
         widgets.footer_frames_label.set_label(&format!(
             "{} image{}",
             frame_count,
-            if frame_count == 1 {
-                ""
-            } else {
-                "s"
-            }
+            if frame_count == 1 { "" } else { "s" }
         ));
         widgets
             .footer_duration_label
