@@ -376,7 +376,6 @@ pub struct AppWidgets {
     diagnostics_label: gtk::Label,
     diagnostics_overview_label: gtk::Label,
     diagnostics_details_box: gtk::Box,
-    selection_label: gtk::Label,
     status_label: gtk::Label,
     footer_frames_label: gtk::Label,
     footer_duration_label: gtk::Label,
@@ -692,9 +691,6 @@ impl Component for AppModel {
             .vexpand(true)
             .build();
         preview_panel.add_css_class("preview-panel");
-        let selection_label = gtk::Label::new(Some("No frames selected"));
-        selection_label.set_xalign(0.0);
-        selection_label.add_css_class("heading");
         let preview_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
@@ -717,7 +713,6 @@ impl Component for AppModel {
         let preview_frame = section("Preview", &preview_box);
         preview_frame.set_hexpand(true);
         preview_frame.set_vexpand(true);
-        preview_panel.append(&selection_label);
         preview_panel.append(&preview_frame);
         workspace_box.append(&preview_panel);
 
@@ -2206,7 +2201,6 @@ impl Component for AppModel {
             diagnostics_label,
             diagnostics_overview_label,
             diagnostics_details_box,
-            selection_label,
             status_label,
             footer_frames_label,
             footer_duration_label,
@@ -2966,9 +2960,6 @@ impl Component for AppModel {
             "workflow-tab-active",
             self.active_tab == WorkflowTab::Export,
         );
-        widgets
-            .selection_label
-            .set_label(&self.selection_summary_text());
         widgets.status_label.set_label(if self.export_in_progress {
             ""
         } else {
@@ -3736,23 +3727,6 @@ impl AppModel {
             crop.x,
             crop.y
         )
-    }
-
-    fn selection_summary_text(&self) -> String {
-        let total = self.timeline.frames().len();
-        if total == 0 {
-            return "Add images to begin building your animation.".to_string();
-        }
-
-        let selected = self.selection.len();
-        if selected == 0 {
-            format!("{total} images loaded. Select frames in the timeline to start editing.")
-        } else if selected == 1 {
-            "1 frame selected. Changes will apply to that frame unless you expand the selection."
-                .to_string()
-        } else {
-            format!("{selected} frames selected. Batch actions will apply across that range.")
-        }
     }
 
     fn total_duration_ms(&self) -> u64 {
