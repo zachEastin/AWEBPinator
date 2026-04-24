@@ -11,6 +11,24 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Fix startup abort in timeline UI changes
+
+- Status: Done
+- Request: Fix the `cargo run` abort caused by invalid GTK values in the compacted timeline UI and update verification instructions to treat `timeout 5s cargo run` as a failure if it panics or aborts before timing out.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `README.md`, `AGENTS.md`, `.ai/workflows.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `README.md`, `AGENTS.md`, `.ai/workflows.md`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run > /tmp/awebpinator-timeout-smoke.log 2>&1` with exit code `124`, `git diff --check`
+- Notes: Removed the invalid `max-height` CSS property, replaced the negative `margin-top` overlay hack with a valid positive inset, and changed preview-layout tick callbacks to use the non-panicking Relm4 sender path so shutdown no longer aborts the process. The earlier bounded-run success claim for the timeline density change was corrected after reproducing the abort from a real `cargo run`.
+
+### 2026-04-24 - Reduce edit and timeline UI density
+
+- Status: Done
+- Request: Make Edit sections collapsible with chevrons, move duplicate/remove/duration/copy/paste/move up/down controls from the timeline into new Edit tab sections, and reduce timeline tile height by tightening the tile layout.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/types.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`, `git diff --check`
+- Notes: Edit now uses collapsible card sections with a header chevron that swaps between open and closed states, the timeline strip keeps only centered transport controls, duplicate/remove/duration/copy/paste/move buttons now live in dedicated Edit sections, and timeline tiles now size from the frame aspect ratio with the badge/check overlaid on the thumbnail plus a tighter centered filename footer.
+
 ### 2026-04-24 - Tighten export column split and settings alignment
 
 - Status: Done

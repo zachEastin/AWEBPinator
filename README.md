@@ -90,6 +90,8 @@ AWEBPinator uses a local-first GUI testing ladder:
 | 2 | Human validation of visible workflows | follow the manual checklist below |
 | 3 | Optional local AT-SPI smoke automation | `python3 tests/gui/smoke.py` after `cargo build` |
 
+Treat Tier 1 as passing only when `timeout 5s cargo run` is interrupted by the timeout, usually exit code `124`, and the output stays free of panic, abort, or new GTK warnings related to the change. If the app exits early on its own, panics, or aborts, the smoke check failed.
+
 The optional AT-SPI smoke script is not part of `cargo test` because it needs a running graphical session. On Fedora, install the local automation dependencies with:
 
 ```bash

@@ -42,7 +42,7 @@ If you need a bounded verification run from the terminal, use:
 timeout 5s cargo run
 ```
 
-That is useful for confirming startup regressions without leaving a GTK process running forever.
+That is useful for confirming startup regressions without leaving a GTK process running forever. Treat it as a pass only when `timeout` stops the app, typically with exit code `124`, and the output contains no panic, abort, or new GTK warnings tied to the change.
 
 ## Verification Requirements
 
@@ -51,7 +51,7 @@ Do not treat `cargo test` alone as sufficient for UI changes.
 Use the local-first GUI testing ladder:
 
 - Tier 0 logic checks: `cargo test` and `cargo clippy --all-targets --all-features -- -D warnings`
-- Tier 1 GTK startup smoke: `cargo build` and `timeout 5s cargo run`
+- Tier 1 GTK startup smoke: `cargo build` and `timeout 5s cargo run` with no panic/abort output and a timeout-driven exit
 - Tier 2 manual GUI checklist: import, selection, drag/drop, reorder, preview, transform, loop, export, save/load
 - Tier 3 optional local AT-SPI smoke: `python3 tests/gui/smoke.py`
 

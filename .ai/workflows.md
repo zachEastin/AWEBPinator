@@ -60,6 +60,8 @@ Use a local-first GUI testing ladder:
 - Tier 2 manual GUI checklist: run the workflow below for visible UI behavior.
 - Tier 3 optional AT-SPI smoke: `python3 tests/gui/smoke.py` after `cargo build`.
 
+Treat Tier 1 as passing only when `timeout 5s cargo run` is stopped by the timeout, usually exit code `124`, and the output stays free of panic, abort, or new GTK warnings introduced by the change.
+
 Tier 3 requires a running graphical session and Fedora packages `python3-dogtail` and `at-spi2-core`. Do not treat it as part of normal `cargo test`.
 
 For non-UI, model-level changes, normally run:

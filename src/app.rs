@@ -363,13 +363,11 @@ pub struct AppWidgets {
     advanced_switch: gtk::Switch,
     preview_panel: gtk::Box,
     timeline_toolbar: gtk::Box,
-    timeline_toolbar_spacer: gtk::Box,
     loop_body: gtk::Box,
     loop_settings_column: gtk::Box,
     export_body: gtk::Box,
     export_settings_column: gtk::Box,
     timeline_strip: gtk::Box,
-    timeline_power_box: gtk::Box,
     nav_first_button: gtk::Button,
     nav_prev_button: gtk::Button,
     nav_play_button: gtk::Button,
@@ -897,21 +895,6 @@ impl Component for AppModel {
         quick_resize_row.append(&gtk::Label::new(Some("Resize")));
         quick_resize_row.append(&quick_resize_combo);
         quick_resize_row.append(&quick_apply_button);
-        let duration_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let edit_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
-        set_accessible_label(&edit_duration_spin, "Frame duration");
-        edit_duration_spin.set_value(100.0);
-        let edit_duration_button = build_labeled_button(
-            "Set Duration",
-            "preferences-system-time-symbolic",
-            "icon-tone-amber",
-        );
-        duration_row.append(&gtk::Label::new(Some("Frame Duration")));
-        duration_row.append(&edit_duration_spin);
-        duration_row.append(&edit_duration_button);
         quick_adjustments.append(&helper_label(
             "Choose a quick action, then apply size or duration changes to the selected frames.",
         ));
@@ -920,11 +903,93 @@ impl Component for AppModel {
         quick_adjustments.append(&crop_action_row);
         quick_adjustments.append(&crop_summary_label);
         quick_adjustments.append(&quick_resize_row);
-        quick_adjustments.append(&duration_row);
         quick_adjustments.append(&helper_label(
             "Need more precise crop, resize, or fit controls? Turn on Advanced.",
         ));
-        edit_page.append(&section("Adjustments", &quick_adjustments));
+        edit_page.append(&collapsible_section(
+            "Adjustments",
+            &quick_adjustments,
+            true,
+        ));
+
+        let timeline_selection_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        let selection_action_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let duplicate_button =
+            build_labeled_button("Duplicate", "edit-copy-symbolic", "icon-tone-cyan");
+        let remove_button =
+            build_labeled_button("Remove", "edit-delete-symbolic", "icon-tone-coral");
+        for button in [&duplicate_button, &remove_button] {
+            button.add_css_class("pill-button");
+            selection_action_row.append(button);
+        }
+        let batch_duration_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let batch_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
+        set_accessible_label(&batch_duration_spin, "Timeline batch duration");
+        batch_duration_spin.set_value(100.0);
+        let batch_duration_button = build_labeled_button(
+            "Set Duration",
+            "preferences-system-time-symbolic",
+            "icon-tone-amber",
+        );
+        batch_duration_button.add_css_class("pill-button");
+        batch_duration_row.append(&gtk::Label::new(Some("Selected Frames")));
+        batch_duration_row.append(&batch_duration_spin);
+        batch_duration_row.append(&batch_duration_button);
+        timeline_selection_actions.append(&helper_label(
+            "Apply common frame actions to the current selection without keeping extra controls in the timeline strip.",
+        ));
+        timeline_selection_actions.append(&selection_action_row);
+        timeline_selection_actions.append(&batch_duration_row);
+        edit_page.append(&collapsible_section(
+            "Timeline Actions",
+            &timeline_selection_actions,
+            true,
+        ));
+
+        let timeline_order_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        let clipboard_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let copy_button = build_labeled_button("Copy", "edit-copy-symbolic", "icon-tone-cyan");
+        let paste_button = build_labeled_button("Paste", "edit-paste-symbolic", "icon-tone-green");
+        for button in [&copy_button, &paste_button] {
+            button.add_css_class("pill-button");
+            clipboard_row.append(button);
+        }
+        let order_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let move_up_button = build_labeled_button("Move Up", "go-up-symbolic", "icon-tone-amber");
+        let move_down_button =
+            build_labeled_button("Move Down", "go-down-symbolic", "icon-tone-amber");
+        for button in [&move_up_button, &move_down_button] {
+            button.add_css_class("pill-button");
+            order_row.append(button);
+        }
+        timeline_order_actions.append(&helper_label(
+            "Clipboard and ordering controls stay in Edit so the timeline can stay focused on navigation and drag reorder.",
+        ));
+        timeline_order_actions.append(&clipboard_row);
+        timeline_order_actions.append(&order_row);
+        edit_page.append(&collapsible_section(
+            "Clipboard And Order",
+            &timeline_order_actions,
+            true,
+        ));
 
         let edit_advanced_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -976,7 +1041,11 @@ impl Component for AppModel {
         transform_grid.attach(&clear_transform_button, 1, 9, 1, 1);
         edit_advanced_box.append(&helper_label("Advanced mode exposes direct crop, resize, fit, and flip controls for expert adjustments."));
         edit_advanced_box.append(&transform_grid);
-        edit_page.append(&section("Advanced Edit Controls", &edit_advanced_box));
+        edit_page.append(&collapsible_section(
+            "Advanced Edit Controls",
+            &edit_advanced_box,
+            false,
+        ));
         let edit_scroll = page_scroller(&edit_page);
         page_stack.add_titled(&edit_scroll, Some(WorkflowTab::Edit.stack_name()), "Edit");
 
@@ -1484,50 +1553,8 @@ impl Component for AppModel {
         let timeline_toolbar = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .halign(gtk::Align::Center)
             .build();
-        let timeline_actions = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let batch_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
-        set_accessible_label(&batch_duration_spin, "Timeline batch duration");
-        batch_duration_spin.set_value(100.0);
-        let batch_duration_button = build_labeled_button(
-            "Set Duration",
-            "preferences-system-time-symbolic",
-            "icon-tone-amber",
-        );
-        let duplicate_button =
-            build_labeled_button("Duplicate", "edit-copy-symbolic", "icon-tone-cyan");
-        let remove_button =
-            build_labeled_button("Remove", "edit-delete-symbolic", "icon-tone-coral");
-        duplicate_button.add_css_class("pill-button");
-        remove_button.add_css_class("pill-button");
-        timeline_actions.append(&duplicate_button);
-        timeline_actions.append(&remove_button);
-        timeline_actions.append(&gtk::Separator::new(gtk::Orientation::Vertical));
-        timeline_actions.append(&gtk::Label::new(Some("Set Duration")));
-        timeline_actions.append(&batch_duration_spin);
-        timeline_actions.append(&batch_duration_button);
-        let timeline_power_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let copy_button = build_labeled_button("Copy", "edit-copy-symbolic", "icon-tone-cyan");
-        let paste_button = build_labeled_button("Paste", "edit-paste-symbolic", "icon-tone-green");
-        let move_up_button = build_labeled_button("Move Up", "go-up-symbolic", "icon-tone-amber");
-        let move_down_button =
-            build_labeled_button("Move Down", "go-down-symbolic", "icon-tone-amber");
-        for button in [
-            &copy_button,
-            &paste_button,
-            &move_up_button,
-            &move_down_button,
-        ] {
-            button.add_css_class("pill-button");
-            timeline_power_box.append(button);
-        }
-        let spacer = gtk::Box::builder().hexpand(true).build();
         let transport_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -1558,9 +1585,6 @@ impl Component for AppModel {
         ] {
             transport_box.append(button);
         }
-        timeline_toolbar.append(&timeline_actions);
-        timeline_toolbar.append(&timeline_power_box);
-        timeline_toolbar.append(&spacer);
         timeline_toolbar.append(&transport_box);
         let timeline_strip = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -1925,13 +1949,6 @@ impl Component for AppModel {
                 batch_duration_spin.value() as u32
             ))
         ));
-        edit_duration_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            #[strong]
-            edit_duration_spin,
-            move |_| sender.input(AppMsg::ApplyBatchDuration(edit_duration_spin.value() as u32))
-        ));
         rotate_left_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -2177,13 +2194,11 @@ impl Component for AppModel {
             advanced_switch,
             preview_panel,
             timeline_toolbar,
-            timeline_toolbar_spacer: spacer,
             loop_body,
             loop_settings_column: loop_left,
             export_body,
             export_settings_column: export_right,
             timeline_strip,
-            timeline_power_box,
             nav_first_button,
             nav_prev_button,
             nav_play_button,
@@ -2900,15 +2915,7 @@ impl Component for AppModel {
                 gtk::Orientation::Horizontal
             },
         );
-        set_box_orientation_if_needed(
-            &widgets.timeline_toolbar,
-            if compact {
-                gtk::Orientation::Vertical
-            } else {
-                gtk::Orientation::Horizontal
-            },
-        );
-        set_visible_if_needed(&widgets.timeline_toolbar_spacer, !compact);
+        set_box_orientation_if_needed(&widgets.timeline_toolbar, gtk::Orientation::Horizontal);
         set_width_request_if_needed(&widgets.content_stack, -1);
         set_width_request_if_needed(&widgets.loop_settings_column, -1);
         set_width_request_if_needed(&widgets.export_settings_column, -1);
@@ -2940,7 +2947,6 @@ impl Component for AppModel {
         set_visible_if_needed(&widgets.edit_advanced_box, self.advanced_mode);
         set_visible_if_needed(&widgets.export_advanced_box, self.advanced_mode);
         set_visible_if_needed(&widgets.diagnostics_details_box, self.advanced_mode);
-        set_visible_if_needed(&widgets.timeline_power_box, self.advanced_mode);
 
         set_widget_css_class(
             &widgets.tab_organize_button,
@@ -4161,14 +4167,15 @@ fn build_timeline_tile(
     sender: ComponentSender<AppModel>,
 ) -> gtk::Box {
     let frame_id = frame.id;
+    let (picture_width, picture_height) = timeline_tile_picture_size(frame);
     let tile = gtk::Box::builder()
         .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .margin_top(6)
-        .margin_bottom(6)
-        .margin_start(6)
-        .margin_end(6)
-        .width_request(132)
+        .spacing(4)
+        .margin_top(4)
+        .margin_bottom(4)
+        .margin_start(4)
+        .margin_end(4)
+        .width_request(picture_width + 12)
         .build();
     set_accessible_label(
         &tile,
@@ -4208,9 +4215,26 @@ fn build_timeline_tile(
     ));
     tile.add_controller(click);
 
+    let picture = gtk::Picture::new();
+    set_picture_from_path(&picture, frame.thumbnail_path.as_deref());
+    picture.set_size_request(picture_width, picture_height);
+    picture.set_can_shrink(true);
+    picture.set_halign(gtk::Align::Center);
+    picture.add_css_class("timeline-picture");
+
+    let media_overlay = gtk::Overlay::new();
+    media_overlay.set_halign(gtk::Align::Center);
+    media_overlay.set_child(Some(&picture));
+
     let badge_row = gtk::Box::builder()
         .orientation(gtk::Orientation::Horizontal)
         .spacing(6)
+        .hexpand(true)
+        .halign(gtk::Align::Fill)
+        .valign(gtk::Align::Start)
+        .margin_top(6)
+        .margin_start(8)
+        .margin_end(8)
         .build();
     let badge = gtk::Label::new(Some(&format!("{:03}", index + 1)));
     badge.add_css_class("timeline-badge");
@@ -4222,23 +4246,17 @@ fn build_timeline_tile(
         check.add_css_class("timeline-check");
         badge_row.append(&check);
     }
-    tile.append(&badge_row);
-
-    let picture = gtk::Picture::new();
-    set_picture_from_path(&picture, frame.thumbnail_path.as_deref());
-    picture.set_size_request(120, 120);
-    picture.set_can_shrink(true);
-    picture.add_css_class("timeline-picture");
-    tile.append(&picture);
-
-    let title = gtk::Label::new(Some(&format!("Frame {:03}", index + 1)));
-    title.set_xalign(0.0);
-    tile.append(&title);
+    media_overlay.add_overlay(&badge_row);
+    tile.append(&media_overlay);
 
     let subtitle = gtk::Label::new(Some(&frame.file_name()));
-    subtitle.set_xalign(0.0);
+    subtitle.set_xalign(0.5);
+    subtitle.set_justify(gtk::Justification::Center);
+    subtitle.set_halign(gtk::Align::Center);
     subtitle.set_wrap(true);
-    subtitle.set_max_width_chars(14);
+    subtitle.set_wrap_mode(pango::WrapMode::WordChar);
+    subtitle.set_max_width_chars(16);
+    subtitle.set_lines(2);
     subtitle.add_css_class("timeline-filename");
     tile.append(&subtitle);
 
@@ -4418,6 +4436,56 @@ fn section<W: IsA<gtk::Widget>>(title: &str, child: &W) -> gtk::Frame {
     label.add_css_class("section-title");
     label.set_xalign(0.0);
     frame.set_label_widget(Some(&label));
+    frame
+}
+
+fn collapsible_section<W: IsA<gtk::Widget>>(title: &str, child: &W, expanded: bool) -> gtk::Frame {
+    let revealer = gtk::Revealer::builder()
+        .transition_type(gtk::RevealerTransitionType::SlideDown)
+        .reveal_child(expanded)
+        .child(child)
+        .build();
+    let frame = gtk::Frame::builder().child(&revealer).build();
+    frame.add_css_class("content-card");
+    frame.add_css_class("section-card");
+    frame.add_css_class("collapsible-section");
+
+    let header_button = gtk::ToggleButton::builder()
+        .active(expanded)
+        .focus_on_click(false)
+        .halign(gtk::Align::Fill)
+        .hexpand(true)
+        .build();
+    header_button.add_css_class("section-toggle");
+    set_accessible_label(&header_button, &format!("Toggle {title} section"));
+
+    let header_row = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(10)
+        .build();
+    let title_label = gtk::Label::new(Some(title));
+    title_label.add_css_class("section-title");
+    title_label.set_xalign(0.0);
+    title_label.set_hexpand(true);
+    let chevron = gtk::Image::from_icon_name(if expanded {
+        "pan-down-symbolic"
+    } else {
+        "pan-end-symbolic"
+    });
+    chevron.add_css_class("section-chevron");
+    header_row.append(&title_label);
+    header_row.append(&chevron);
+    header_button.set_child(Some(&header_row));
+    header_button.connect_toggled(move |button| {
+        let open = button.is_active();
+        revealer.set_reveal_child(open);
+        chevron.set_icon_name(Some(if open {
+            "pan-down-symbolic"
+        } else {
+            "pan-end-symbolic"
+        }));
+    });
+    frame.set_label_widget(Some(&header_button));
     frame
 }
 
@@ -4623,6 +4691,21 @@ fn page_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .vscrollbar_policy(gtk::PolicyType::Automatic)
         .child(child)
         .build()
+}
+
+fn timeline_tile_picture_size(frame: &FrameItem) -> (i32, i32) {
+    const PICTURE_HEIGHT: i32 = 78;
+    const MIN_WIDTH: i32 = 72;
+    const MAX_WIDTH: i32 = 156;
+
+    let aspect_ratio = frame
+        .source_dimensions
+        .filter(|(_, height)| *height > 0)
+        .map(|(width, height)| width as f64 / height as f64)
+        .unwrap_or(1.0);
+    let picture_width = ((PICTURE_HEIGHT as f64) * aspect_ratio).round() as i32;
+
+    (picture_width.clamp(MIN_WIDTH, MAX_WIDTH), PICTURE_HEIGHT)
 }
 
 fn set_widget_css_class(widget: &impl IsA<gtk::Widget>, class_name: &str, enabled: bool) {
@@ -4921,8 +5004,10 @@ fn send_preview_layout_change(
     let size = preview_render_size_for_widget(widget);
     if last_size.get() != Some(size) {
         last_size.set(Some(size));
-        sender.input(AppMsg::PreviewLayoutChanged { tab, size });
-        true
+        sender
+            .input_sender()
+            .send(AppMsg::PreviewLayoutChanged { tab, size })
+            .is_ok()
     } else {
         false
     }
@@ -5005,6 +5090,21 @@ fn install_app_css(window: &gtk::Window) {
             letter-spacing: 0.02em;
             color: #f4f7fb;
         }
+        .section-toggle {
+            padding: 0;
+            background: transparent;
+            border: none;
+            box-shadow: none;
+        }
+        .section-toggle:hover {
+            background: transparent;
+        }
+        .section-chevron {
+            color: #9fb6d5;
+        }
+        .collapsible-section > border {
+            padding-top: 4px;
+        }
         .workflow-tab,
         .pill-button,
         .choice-card {
@@ -5082,7 +5182,6 @@ fn install_app_css(window: &gtk::Window) {
         }
         .export-preview-fixed {
             min-height: 225px;
-            max-height: 225px;
         }
         .export-summary-action-row {
             margin-top: 2px;
@@ -5203,7 +5302,7 @@ fn install_app_css(window: &gtk::Window) {
         }
         .timeline-tile {
             border-radius: 10px;
-            padding: 6px;
+            padding: 6px 6px 4px;
             border: 2px solid transparent;
             background: #1b222c;
         }
@@ -5227,7 +5326,7 @@ fn install_app_css(window: &gtk::Window) {
         .timeline-check {
             background: #223148;
             border-radius: 999px;
-            padding: 2px 7px;
+            padding: 1px 7px;
             color: #d8e6f8;
             font-weight: 700;
         }
@@ -5236,7 +5335,8 @@ fn install_app_css(window: &gtk::Window) {
             color: white;
         }
         .timeline-filename {
-            color: #9da9ba;
+            color: #8694a7;
+            font-size: 12px;
         }
         ",
     );
