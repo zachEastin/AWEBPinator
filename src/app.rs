@@ -2513,23 +2513,17 @@ impl Component for AppModel {
             .nav_last_button
             .set_sensitive(has_frames && current_index != last_index);
 
-        if let Some(path) = self.preview_path.as_ref() {
-            let file = gio::File::for_path(path);
-            widgets.preview_picture.set_file(Some(&file));
-            widgets.loop_preview_picture.set_file(Some(&file));
-        } else {
-            widgets.preview_picture.set_file(None::<&gio::File>);
-            widgets.loop_preview_picture.set_file(None::<&gio::File>);
-        }
+        set_picture_from_path(&widgets.preview_picture, self.preview_path.as_deref());
+        set_picture_from_path(&widgets.loop_preview_picture, self.preview_path.as_deref());
         let export_preview_path = self.export_preview_path.as_ref().filter(|_| {
             !should_refresh_preview(self.export_preview_rendered_size, self.preview_target_size)
         });
-        if let Some(path) = export_preview_path.or(self.preview_path.as_ref()) {
-            let file = gio::File::for_path(path);
-            widgets.export_preview_picture.set_file(Some(&file));
-        } else {
-            widgets.export_preview_picture.set_file(None::<&gio::File>);
-        }
+        set_picture_from_path(
+            &widgets.export_preview_picture,
+            export_preview_path
+                .or(self.preview_path.as_ref())
+                .map(PathBuf::as_path),
+        );
         widgets.preview_meta.set_label(&self.preview_meta_text());
         widgets
             .crop_summary_label
@@ -3490,11 +3484,8 @@ fn build_timeline_tile(
     ));
     tile.add_controller(click);
 
-    let picture = if let Some(path) = frame.thumbnail_path.as_ref() {
-        gtk::Picture::for_filename(path)
-    } else {
-        gtk::Picture::new()
-    };
+    let picture = gtk::Picture::new();
+    set_picture_from_path(&picture, frame.thumbnail_path.as_deref());
     picture.set_size_request(120, 120);
     picture.set_can_shrink(true);
     tile.append(&picture);
@@ -3927,6 +3918,18 @@ fn install_preview_layout_watch(
 
 fn set_button_icon(button: &gtk::Button, icon_name: &str) {
     button.set_child(Some(&gtk::Image::from_icon_name(icon_name)));
+}
+
+fn set_picture_from_path(picture: &gtk::Picture, path: Option<&Path>) {
+    if let Some(texture) = path
+        .filter(|path| path.is_file())
+        .and_then(|path| gdk::Texture::from_file(&gio::File::for_path(path)).ok())
+    {
+        picture.set_paintable(Some(&texture));
+        picture.set_visible(true);
+    } else {
+        picture.set_visible(false);
+    }
 }
 
 fn send_preview_layout_change(
@@ -4569,10 +4572,6 @@ fn immediate_preview_path(
         return current_preview_path.clone();
     }
 
-    if let Some(thumbnail_path) = frame.thumbnail_path.clone() {
-        return thumbnail_path;
-    }
-
     frame.source_path.clone()
 }
 
@@ -4687,7 +4686,7 @@ mod tests {
     }
 
     #[test]
-    fn immediate_preview_prefers_thumbnail_when_not_playing() {
+    fn immediate_preview_uses_source_before_thumbnail_when_not_playing() {
         let frame = FrameItem {
             id: 1,
             source_path: PathBuf::from("source.png"),
@@ -4707,7 +4706,7 @@ mod tests {
 
         assert_eq!(
             immediate_preview_path(&frame, None, None, false),
-            PathBuf::from("thumb.png")
+            PathBuf::from("source.png")
         );
     }
 
@@ -4776,7 +4775,7 @@ mod tests {
     }
 
     #[test]
-    fn immediate_preview_uses_thumbnail_during_playback() {
+    fn immediate_preview_uses_source_before_thumbnail_during_playback() {
         let frame = FrameItem {
             id: 1,
             source_path: PathBuf::from("source.png"),
@@ -4789,7 +4788,7 @@ mod tests {
 
         assert_eq!(
             immediate_preview_path(&frame, None, None, true),
-            PathBuf::from("thumb.png")
+            PathBuf::from("source.png")
         );
     }
 

@@ -11,6 +11,33 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-23 - Stop preview fallback from returning to proxy resolution
+
+- Status: Done
+- Request: Selecting a frame or playing still brings the very low-res proxy back into the preview, and GTK paintable warnings are still appearing.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo test`, `cargo build`, `cargo clippy --all-targets --all-features -- -D warnings`, `python3 tests/gui/smoke.py`, `timeout 5s cargo run 2>&1 | tee /tmp/awebpinator-run-after-proxy-fix.log`, `rg -n "Gtk-CRITICAL|GLib-GObject-CRITICAL|gtk_scaler_new|g_object_unref" /tmp/awebpinator-run-after-proxy-fix.log || true`
+- Notes: The preview queue now falls back to the original source image instead of the 160 px timeline thumbnail when no exact cached render exists. Picture widgets hide instead of being assigned a null paintable when no valid image path is available.
+
+### 2026-04-23 - Avoid GTK paintable warnings during picture updates
+
+- Status: Done
+- Request: Investigate repeated `gtk_scaler_new: assertion 'GDK_IS_PAINTABLE (paintable)' failed` and `g_object_unref` warnings during `cargo run`.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `python3 tests/gui/smoke.py`, `timeout 5s cargo run 2>&1 | tee /tmp/awebpinator-run-after-picture-fix.log`, `rg -n "Gtk-CRITICAL|GLib-GObject-CRITICAL|gtk_scaler_new|g_object_unref" /tmp/awebpinator-run-after-picture-fix.log || true`
+- Notes: Clean bounded startup did not reproduce the warnings before the fix. Preview, loop preview, export preview, and timeline thumbnail widgets now load paths through `gdk::Texture::from_file` and only hand GTK a valid paintable; missing or invalid paths clear the picture instead of going through GTK's file loader.
+
+### 2026-04-23 - Filter benign AT-SPI smoke warning
+
+- Status: Done
+- Request: The Dogtail smoke test prints a dbind AT-SPI cache warning even when it passes; make the output less confusing.
+- Files inspected: `.ai/task_tracker.md`, `tests/gui/smoke.py`
+- Files changed: `.ai/task_tracker.md`, `tests/gui/smoke.py`
+- Verification: `python3 tests/gui/smoke.py`, `python3 -m py_compile tests/gui/smoke.py`
+- Notes: The smoke script now filters the known AT-SPI cache warning during Dogtail tree traversal while preserving any other stderr output. The smoke test now prints only `AWEBPinator GUI smoke passed.` on success in this environment.
+
 ### 2026-04-23 - Implement local-first GUI testing strategy
 
 - Status: Done

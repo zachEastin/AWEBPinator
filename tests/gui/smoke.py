@@ -11,8 +11,11 @@ session plus Fedora packages `python3-dogtail` and `at-spi2-core`.
 
 from __future__ import annotations
 
+import contextlib
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -43,6 +46,31 @@ REQUIRED_ACCESSIBLE_LABELS = {
     "Go to beginning (Ctrl+Left)",
     "Play or pause preview playback (Space)",
 }
+KNOWN_ATSPI_WARNING_PARTS = (
+    "dbind-WARNING",
+    "AT-SPI: Error in GetItems",
+    "/org/a11y/atspi/cache",
+)
+
+
+@contextlib.contextmanager
+def filter_known_atspi_stderr():
+    """Hide the common AT-SPI cache warning while preserving other stderr."""
+    original_stderr = os.dup(2)
+    with tempfile.TemporaryFile(mode="w+b") as captured:
+        os.dup2(captured.fileno(), 2)
+        try:
+            yield
+        finally:
+            os.dup2(original_stderr, 2)
+            os.close(original_stderr)
+            captured.seek(0)
+            for raw_line in captured.read().decode(errors="replace").splitlines():
+                if not raw_line.strip():
+                    continue
+                if all(part in raw_line for part in KNOWN_ATSPI_WARNING_PARTS):
+                    continue
+                print(raw_line, file=sys.stderr)
 
 
 def iter_nodes(node, max_depth=12):
@@ -85,8 +113,9 @@ def main() -> int:
 
     proc = subprocess.Popen([str(APP_BINARY)], cwd=REPO_ROOT)
     try:
-        app = find_app()
-        names = visible_names(app)
+        with filter_known_atspi_stderr():
+            app = find_app()
+            names = visible_names(app)
         missing = sorted(REQUIRED_ACCESSIBLE_LABELS - names)
         if missing:
             print("Missing accessible labels:", file=sys.stderr)
