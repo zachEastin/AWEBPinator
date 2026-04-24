@@ -9,6 +9,28 @@ use tempfile::TempDir;
 use crate::thumbnail::render_frame_to_path;
 use crate::types::{ExportJob, ExportProfile, FrameItem, ResizeTarget};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportPhase {
+    PreparingFrames,
+    Encoding,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExportProgress {
+    pub phase: ExportPhase,
+    pub fraction: f64,
+    pub detail: String,
+}
+
+const PREPARE_PROGRESS_BUCKETS: usize = 24;
+
+pub fn normalized_output_path(path: &Path) -> PathBuf {
+    if path.extension().is_some() {
+        return path.to_path_buf();
+    }
+    path.with_extension("webp")
+}
+
 pub fn build_effective_command(
     manifest_path: &Path,
     output_path: &Path,
@@ -20,6 +42,10 @@ pub fn build_effective_command(
         } else {
             "-n".to_string()
         },
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-nostdin".to_string(),
         "-f".to_string(),
         "concat".to_string(),
         "-safe".to_string(),
@@ -71,6 +97,19 @@ pub fn export_animation(
     profile: &ExportProfile,
     output_path: &Path,
 ) -> anyhow::Result<ExportJob> {
+    export_animation_with_progress(frames, profile, output_path, |_| {})
+}
+
+pub fn export_animation_with_progress<F>(
+    frames: &[FrameItem],
+    profile: &ExportProfile,
+    output_path: &Path,
+    mut on_progress: F,
+) -> anyhow::Result<ExportJob>
+where
+    F: FnMut(ExportProgress),
+{
+    let output_path = normalized_output_path(output_path);
     let enabled_frames: Vec<_> = frames
         .iter()
         .filter(|frame| frame.enabled)
@@ -91,31 +130,70 @@ pub fn export_animation(
         _ => None,
     };
 
+    on_progress(ExportProgress {
+        phase: ExportPhase::PreparingFrames,
+        fraction: 0.0,
+        detail: format!("Preparing {} frame(s) for export...", enabled_frames.len()),
+    });
+
+    let total_frames = enabled_frames.len();
+    let mut last_prepare_bucket = None;
     let mut manifest_entries = Vec::new();
     for (index, frame) in enabled_frames.iter().enumerate() {
         let frame_path = rendered_dir.join(format!("{index:05}.png"));
         render_frame_to_path(frame, resize_target, profile.fit_mode, &frame_path)?;
         manifest_entries.push((frame_path, frame.duration_ms));
+        let prepare_bucket = ((index + 1) * PREPARE_PROGRESS_BUCKETS) / total_frames.max(1);
+        let should_emit = last_prepare_bucket != Some(prepare_bucket) || index + 1 == total_frames;
+        if should_emit {
+            last_prepare_bucket = Some(prepare_bucket);
+            on_progress(ExportProgress {
+                phase: ExportPhase::PreparingFrames,
+                fraction: 0.8 * ((index + 1) as f64 / total_frames as f64),
+                detail: format!(
+                    "Rendering frame {} of {}: {}",
+                    index + 1,
+                    total_frames,
+                    frame.file_name()
+                ),
+            });
+        }
     }
 
     let manifest_path = temp_dir.path().join("frames.ffconcat");
     write_concat_manifest(&manifest_path, &manifest_entries)?;
-    let args = build_effective_command(&manifest_path, output_path, profile)?;
+    let args = build_effective_command(&manifest_path, &output_path, profile)?;
     let effective_command = format!("ffmpeg {}", shell_join(&args));
+
+    on_progress(ExportProgress {
+        phase: ExportPhase::Encoding,
+        fraction: 0.9,
+        detail: "Encoding animated WebP...".to_string(),
+    });
 
     let output = Command::new("ffmpeg")
         .args(&args)
         .output()
         .context("spawn ffmpeg")?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("ffmpeg failed: {}", stderr.trim());
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        let stderr_text = stderr_text.trim();
+        if stderr_text.is_empty() {
+            bail!("ffmpeg failed with status {}", output.status);
+        }
+        bail!("ffmpeg failed: {stderr_text}");
     }
+
+    on_progress(ExportProgress {
+        phase: ExportPhase::Encoding,
+        fraction: 1.0,
+        detail: "Export finished.".to_string(),
+    });
 
     Ok(ExportJob {
         temp_dir: temp_dir.keep(),
         manifest_path,
-        output_path: output_path.to_path_buf(),
+        output_path,
         effective_command,
         status: "Export finished".to_string(),
     })
@@ -176,7 +254,10 @@ mod tests {
 
     use crate::types::{EncoderPreset, ExportPreset, FitMode};
 
-    use super::{build_effective_command, export_animation, write_concat_manifest};
+    use super::{
+        ExportPhase, build_effective_command, export_animation, export_animation_with_progress,
+        normalized_output_path, write_concat_manifest,
+    };
 
     fn tiny_png(path: &Path, color: [u8; 4]) {
         let image = RgbaImage::from_pixel(4, 4, Rgba(color));
@@ -231,6 +312,18 @@ mod tests {
     }
 
     #[test]
+    fn output_path_adds_webp_extension_when_missing() {
+        assert_eq!(
+            normalized_output_path(Path::new("/tmp/demo")),
+            Path::new("/tmp/demo.webp")
+        );
+        assert_eq!(
+            normalized_output_path(Path::new("/tmp/demo.webp")),
+            Path::new("/tmp/demo.webp")
+        );
+    }
+
+    #[test]
     fn export_generates_webp() {
         let dir = tempdir().unwrap();
         let first = dir.path().join("one.png");
@@ -261,5 +354,79 @@ mod tests {
         let output = dir.path().join("animation.webp");
         let job = export_animation(&frames, &ExportProfile::default(), &output).unwrap();
         assert!(job.output_path.exists());
+    }
+
+    #[test]
+    fn export_adds_webp_extension_when_output_has_no_extension() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("one.png");
+        tiny_png(&first, [255, 0, 0, 255]);
+
+        let frames = vec![FrameItem {
+            id: 1,
+            source_path: first,
+            duration_ms: 120,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: None,
+            enabled: true,
+            source_dimensions: Some((4, 4)),
+        }];
+        let output = dir.path().join("animation");
+        let job = export_animation(&frames, &ExportProfile::default(), &output).unwrap();
+        assert_eq!(job.output_path, dir.path().join("animation.webp"));
+        assert!(job.output_path.exists());
+    }
+
+    #[test]
+    fn export_reports_progress_updates() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("one.png");
+        let second = dir.path().join("two.png");
+        tiny_png(&first, [255, 0, 0, 255]);
+        tiny_png(&second, [0, 255, 0, 255]);
+
+        let frames = vec![
+            FrameItem {
+                id: 1,
+                source_path: first,
+                duration_ms: 120,
+                transform_spec: TransformSpec::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: Some((4, 4)),
+            },
+            FrameItem {
+                id: 2,
+                source_path: second,
+                duration_ms: 240,
+                transform_spec: TransformSpec::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: Some((4, 4)),
+            },
+        ];
+        let output = dir.path().join("progress.webp");
+        let mut progress_updates = Vec::new();
+
+        let job = export_animation_with_progress(
+            &frames,
+            &ExportProfile::default(),
+            &output,
+            |progress| progress_updates.push(progress),
+        )
+        .unwrap();
+
+        assert!(job.output_path.exists());
+        assert!(!progress_updates.is_empty());
+        assert_eq!(
+            progress_updates.first().unwrap().phase,
+            ExportPhase::PreparingFrames
+        );
+        assert!(
+            progress_updates
+                .iter()
+                .any(|update| update.phase == ExportPhase::Encoding)
+        );
+        assert_eq!(progress_updates.last().unwrap().fraction, 1.0);
     }
 }

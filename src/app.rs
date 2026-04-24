@@ -1,10 +1,17 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::Duration;
 
-use crate::export::{build_command_preview, export_animation};
+use crate::export::{
+    build_command_preview, export_animation_with_progress, normalized_output_path,
+};
 use crate::preferences::{UiPreferences, load_ui_preferences, save_ui_preferences};
 use crate::project::{load_autosave_project, load_project, save_autosave_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
@@ -26,6 +33,7 @@ use relm4::{Component, ComponentParts, ComponentSender, RelmApp};
 const DEFAULT_PREVIEW_LOGICAL_WIDTH: i32 = 720;
 const DEFAULT_PREVIEW_LOGICAL_HEIGHT: i32 = 360;
 const MAX_PREVIEW_RENDER_EDGE: u32 = 4096;
+static EXPORT_LAYOUT_WATCH_SUSPENDED: AtomicBool = AtomicBool::new(false);
 
 pub fn run() {
     let app = RelmApp::new("dev.truevfx.awebpinator");
@@ -106,6 +114,11 @@ pub enum AppMsg {
     OpenProject(PathBuf),
     ChooseOutputPath(PathBuf),
     ExportNow,
+    StartExportWorker(ExportStartRequest),
+    PollExportState,
+    FinalizeExportUi,
+    ResumePreviewLayoutWatch,
+    CompleteExportUiRestore,
     CloseWithAutosave {
         window: gtk::Window,
         close_allowed: Rc<Cell<bool>>,
@@ -132,9 +145,6 @@ pub enum CommandMsg {
         render_size: PreviewRenderSize,
         preview_path: Option<PathBuf>,
         error: Option<String>,
-    },
-    ExportFinished {
-        result: Result<ExportJob, String>,
     },
 }
 
@@ -283,6 +293,27 @@ pub enum LayoutMode {
     Compact,
 }
 
+#[derive(Debug, Clone)]
+struct ExportProgressState {
+    fraction: f64,
+    detail: String,
+}
+
+#[derive(Debug, Clone)]
+struct ExportWorkerState {
+    version: u64,
+    progress: Option<ExportProgressState>,
+    result: Option<Result<ExportJob, String>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportStartRequest {
+    frames: Vec<FrameItem>,
+    profile: ExportProfile,
+    output_path: PathBuf,
+    export_worker_state: Arc<Mutex<ExportWorkerState>>,
+}
+
 pub struct AppModel {
     timeline: Timeline,
     selection: BTreeSet<u64>,
@@ -314,6 +345,10 @@ pub struct AppModel {
     playback_generation: u64,
     thumbnails_pending: usize,
     export_in_progress: bool,
+    export_completion_pending: bool,
+    export_progress: Option<ExportProgressState>,
+    export_worker_state: Option<Arc<Mutex<ExportWorkerState>>>,
+    export_poll_active: Option<Rc<Cell<bool>>>,
 }
 
 pub struct AppWidgets {
@@ -345,6 +380,7 @@ pub struct AppWidgets {
     status_label: gtk::Label,
     footer_frames_label: gtk::Label,
     footer_duration_label: gtk::Label,
+    footer_progress_bar: gtk::ProgressBar,
     footer_state_label: gtk::Label,
     preview_picture: gtk::Picture,
     preview_meta: gtk::Label,
@@ -362,6 +398,7 @@ pub struct AppWidgets {
     apply_crop_button: gtk::Button,
     clear_crop_button: gtk::Button,
     output_entry: gtk::Entry,
+    suppress_output_entry_change: Rc<Cell<bool>>,
     quick_resize_combo: gtk::ComboBoxText,
     export_size_combo: gtk::ComboBoxText,
     loop_source_label: gtk::Label,
@@ -403,6 +440,10 @@ pub struct AppWidgets {
     resize_w: gtk::SpinButton,
     resize_h: gtk::SpinButton,
     inspector_fit_combo: gtk::ComboBoxText,
+    timeline_render_signature: u64,
+    preview_picture_path: Option<PathBuf>,
+    loop_preview_picture_path: Option<PathBuf>,
+    export_preview_picture_path: Option<PathBuf>,
 }
 
 impl Component for AppModel {
@@ -476,6 +517,10 @@ impl Component for AppModel {
             playback_generation: 0,
             thumbnails_pending: 0,
             export_in_progress: false,
+            export_completion_pending: false,
+            export_progress: None,
+            export_worker_state: None,
+            export_poll_active: None,
         };
         let restored_frame_ids = match load_autosave_project() {
             Ok(Some(document)) => {
@@ -1026,6 +1071,7 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let output_entry = gtk::Entry::new();
+        let suppress_output_entry_change = Rc::new(Cell::new(false));
         set_accessible_label(&output_entry, "Export output path");
         output_entry.set_placeholder_text(Some("/path/to/output.webp"));
         let browse_output_button =
@@ -1302,7 +1348,13 @@ impl Component for AppModel {
         footer_frames_label.set_xalign(0.0);
         let footer_duration_label = gtk::Label::new(Some("0.0 s total"));
         footer_duration_label.set_xalign(0.0);
-        let footer_spacer = gtk::Box::builder().hexpand(true).build();
+        let footer_progress_bar = gtk::ProgressBar::builder()
+            .hexpand(true)
+            .show_text(true)
+            .visible(true)
+            .width_request(260)
+            .valign(gtk::Align::Center)
+            .build();
         let status_label = gtk::Label::new(None);
         status_label.set_xalign(1.0);
         status_label.set_wrap(true);
@@ -1312,7 +1364,7 @@ impl Component for AppModel {
         footer_state_label.add_css_class("status-pill");
         footer.append(&footer_frames_label);
         footer.append(&footer_duration_label);
-        footer.append(&footer_spacer);
+        footer.append(&footer_progress_bar);
         footer.append(&status_label);
         footer.append(&footer_state_label);
         root.append(&footer);
@@ -1752,7 +1804,13 @@ impl Component for AppModel {
         output_entry.connect_changed(clone!(
             #[strong]
             sender,
-            move |entry| sender.input(AppMsg::SetOutputPath(entry.text().to_string()))
+            #[strong]
+            suppress_output_entry_change,
+            move |entry| {
+                if !suppress_output_entry_change.get() {
+                    sender.input(AppMsg::SetOutputPath(entry.text().to_string()));
+                }
+            }
         ));
         width_spin.connect_value_changed(clone!(
             #[strong]
@@ -1858,6 +1916,7 @@ impl Component for AppModel {
             status_label,
             footer_frames_label,
             footer_duration_label,
+            footer_progress_bar,
             footer_state_label,
             preview_picture,
             preview_meta,
@@ -1875,6 +1934,7 @@ impl Component for AppModel {
             apply_crop_button,
             clear_crop_button,
             output_entry,
+            suppress_output_entry_change,
             quick_resize_combo,
             export_size_combo,
             loop_source_label,
@@ -1916,6 +1976,10 @@ impl Component for AppModel {
             resize_w,
             resize_h,
             inspector_fit_combo,
+            timeline_render_signature: 0,
+            preview_picture_path: None,
+            loop_preview_picture_path: None,
+            export_preview_picture_path: None,
         };
 
         if !restored_frame_ids.is_empty() {
@@ -2262,7 +2326,7 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ChooseOutputPath(path) => {
-                self.last_output_path = Some(path);
+                self.last_output_path = Some(normalized_output_path(&path));
             }
             AppMsg::ExportNow => {
                 let Some(output_path) = self.last_output_path.clone() else {
@@ -2270,19 +2334,110 @@ impl Component for AppModel {
                     self.recompute_command_preview();
                     return;
                 };
+                let output_path = normalized_output_path(&output_path);
+                self.last_output_path = Some(output_path.clone());
                 if self.export_in_progress {
                     self.status = "Export already running.".to_string();
                     self.recompute_command_preview();
                     return;
                 }
+                EXPORT_LAYOUT_WATCH_SUSPENDED.store(true, Ordering::Relaxed);
                 self.export_in_progress = true;
                 self.status = format!("Exporting to {} ...", output_path.display());
+                let initial_progress = ExportProgressState {
+                    fraction: 0.0,
+                    detail: "Preparing export...".to_string(),
+                };
+                self.export_progress = Some(initial_progress.clone());
                 let frames = self.timeline.frames().to_vec();
                 let profile = self.export_profile.clone();
-                sender.spawn_oneshot_command(move || CommandMsg::ExportFinished {
-                    result: export_animation(&frames, &profile, &output_path)
-                        .map_err(|err| err.to_string()),
+                let export_worker_state = Arc::new(Mutex::new(ExportWorkerState {
+                    version: 1,
+                    progress: Some(initial_progress),
+                    result: None,
+                }));
+                self.export_worker_state = Some(export_worker_state.clone());
+                if let Some(active) = self.export_poll_active.take() {
+                    active.set(false);
+                }
+                let export_poll_active = Rc::new(Cell::new(true));
+                self.export_poll_active = Some(export_poll_active.clone());
+                install_export_poll(
+                    sender.clone(),
+                    export_poll_active,
+                    export_worker_state.clone(),
+                );
+                let export_start_request = ExportStartRequest {
+                    frames,
+                    profile,
+                    output_path,
+                    export_worker_state,
+                };
+                gtk::glib::timeout_add_local_once(Duration::from_millis(0), move || {
+                    sender.input(AppMsg::StartExportWorker(export_start_request));
                 });
+            }
+            AppMsg::StartExportWorker(export_start_request) => {
+                let ExportStartRequest {
+                    frames,
+                    profile,
+                    output_path,
+                    export_worker_state,
+                } = export_start_request;
+
+                let thread_name = "export-worker".to_string();
+                match thread::Builder::new().name(thread_name.clone()).spawn(move || {
+                    let result = export_animation_with_progress(
+                        &frames,
+                        &profile,
+                        &output_path,
+                        |progress| {
+                            if let Ok(mut state) = export_worker_state.lock() {
+                                state.progress = Some(ExportProgressState {
+                                    fraction: progress.fraction.clamp(0.0, 1.0),
+                                    detail: progress.detail,
+                                });
+                                state.version = state.version.saturating_add(1);
+                            }
+                        },
+                    )
+                    .map_err(|err| err.to_string());
+
+                    if let Ok(mut state) = export_worker_state.lock() {
+                        state.result = Some(result);
+                        state.version = state.version.saturating_add(1);
+                    }
+                }) {
+                    Ok(_) => {}
+                    Err(err) => {
+                        self.export_in_progress = false;
+                        self.export_progress = None;
+                        self.export_worker_state = None;
+                        if let Some(active) = self.export_poll_active.take() {
+                            active.set(false);
+                        }
+                        self.status = format!("Failed to start export worker: {err}");
+                    }
+                }
+            }
+            AppMsg::PollExportState => {
+                self.poll_export_state(&sender);
+            }
+            AppMsg::FinalizeExportUi => {
+                let sender = sender.clone();
+                gtk::glib::timeout_add_local_once(Duration::from_millis(0), move || {
+                    sender.input(AppMsg::ResumePreviewLayoutWatch);
+                });
+            }
+            AppMsg::ResumePreviewLayoutWatch => {
+                EXPORT_LAYOUT_WATCH_SUSPENDED.store(false, Ordering::Relaxed);
+                let sender = sender.clone();
+                gtk::glib::timeout_add_local_once(Duration::from_millis(0), move || {
+                    sender.input(AppMsg::CompleteExportUiRestore);
+                });
+            }
+            AppMsg::CompleteExportUiRestore => {
+                self.export_completion_pending = false;
             }
             AppMsg::CloseWithAutosave {
                 window,
@@ -2373,13 +2528,6 @@ impl Component for AppModel {
                         "Export preview refreshed with the current export settings.".to_string();
                 }
             }
-            CommandMsg::ExportFinished { result } => {
-                self.export_in_progress = false;
-                match result {
-                    Ok(job) => self.status = format!("Exported {}", job.output_path.display()),
-                    Err(err) => self.status = format!("Export failed: {err}"),
-                }
-            }
         }
 
         self.recompute_command_preview();
@@ -2387,6 +2535,53 @@ impl Component for AppModel {
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, sender: ComponentSender<Self>) {
+        let frame_count = self.timeline.frames().len();
+        let has_frames = frame_count != 0;
+        let readiness_text = self.readiness_text();
+
+        if self.export_in_progress || self.export_completion_pending {
+            widgets.status_label.set_label("");
+            widgets.footer_frames_label.set_label(&format!(
+                "{} image{}",
+                frame_count,
+                if frame_count == 1 { "" } else { "s" }
+            ));
+            widgets
+                .footer_duration_label
+                .set_label(&format_duration_ms(self.total_duration_ms()));
+            if self.export_in_progress {
+                if let Some(progress) = &self.export_progress {
+                    widgets
+                        .footer_progress_bar
+                        .set_fraction(progress.fraction.clamp(0.0, 1.0));
+                    widgets.footer_progress_bar.set_text(Some(&progress.detail));
+                } else {
+                    widgets.footer_progress_bar.set_fraction(0.0);
+                    widgets
+                        .footer_progress_bar
+                        .set_text(Some("Preparing export..."));
+                }
+            } else {
+                widgets
+                    .footer_progress_bar
+                    .set_fraction(0.0);
+                widgets.footer_progress_bar.set_text(Some("Idle"));
+            }
+            widgets.footer_state_label.set_label(&readiness_text);
+            widgets
+                .preview_export_button
+                .set_sensitive(!self.export_completion_pending && has_frames);
+            widgets.export_button.set_sensitive(
+                !self.export_completion_pending
+                    && has_frames
+                    && self.last_output_path.is_some(),
+            );
+            if self.export_completion_pending {
+                widgets.status_label.set_label(&self.status);
+            }
+            return;
+        }
+
         let compact = self.layout_mode == LayoutMode::Compact;
         set_box_orientation_if_needed(
             &widgets.workspace_box,
@@ -2420,7 +2615,7 @@ impl Component for AppModel {
                 gtk::Orientation::Horizontal
             },
         );
-        widgets.timeline_toolbar_spacer.set_visible(!compact);
+        set_visible_if_needed(&widgets.timeline_toolbar_spacer, !compact);
         set_width_request_if_needed(&widgets.content_stack, if compact { -1 } else { 420 });
         set_width_request_if_needed(&widgets.loop_right, if compact { -1 } else { 320 });
         set_width_request_if_needed(&widgets.export_right, if compact { -1 } else { 320 });
@@ -2440,19 +2635,13 @@ impl Component for AppModel {
             if compact { 270 } else { 320 },
         );
 
-        widgets
-            .content_stack
-            .set_visible_child_name(self.active_tab.stack_name());
+        set_stack_visible_child_name_if_needed(&widgets.content_stack, self.active_tab.stack_name());
         set_switch_if_needed(&widgets.advanced_switch, self.advanced_mode);
-        widgets
-            .preview_panel
-            .set_visible(self.active_tab == WorkflowTab::Edit);
-        widgets.edit_advanced_box.set_visible(self.advanced_mode);
-        widgets.export_advanced_box.set_visible(self.advanced_mode);
-        widgets
-            .diagnostics_details_box
-            .set_visible(self.advanced_mode);
-        widgets.timeline_power_box.set_visible(self.advanced_mode);
+        set_visible_if_needed(&widgets.preview_panel, self.active_tab == WorkflowTab::Edit);
+        set_visible_if_needed(&widgets.edit_advanced_box, self.advanced_mode);
+        set_visible_if_needed(&widgets.export_advanced_box, self.advanced_mode);
+        set_visible_if_needed(&widgets.diagnostics_details_box, self.advanced_mode);
+        set_visible_if_needed(&widgets.timeline_power_box, self.advanced_mode);
 
         set_widget_css_class(
             &widgets.tab_edit_button,
@@ -2478,11 +2667,15 @@ impl Component for AppModel {
         widgets
             .selection_label
             .set_label(&self.selection_summary_text());
-        widgets.status_label.set_label(&self.status);
+        widgets.status_label.set_label(if self.export_in_progress {
+            ""
+        } else {
+            &self.status
+        });
         widgets.footer_frames_label.set_label(&format!(
             "{} image{}",
-            self.timeline.frames().len(),
-            if self.timeline.frames().len() == 1 {
+            frame_count,
+            if frame_count == 1 {
                 ""
             } else {
                 "s"
@@ -2491,7 +2684,9 @@ impl Component for AppModel {
         widgets
             .footer_duration_label
             .set_label(&format_duration_ms(self.total_duration_ms()));
-        widgets.footer_state_label.set_label(&self.readiness_text());
+        widgets.footer_progress_bar.set_fraction(0.0);
+        widgets.footer_progress_bar.set_text(Some("Idle"));
+        widgets.footer_state_label.set_label(&readiness_text);
         widgets
             .diagnostics_overview_label
             .set_label(&self.diagnostics_overview_text());
@@ -2511,7 +2706,6 @@ impl Component for AppModel {
         );
 
         let frame_ids = self.timeline_frame_ids();
-        let has_frames = !frame_ids.is_empty();
         let current_index = self.current_frame_index();
         let last_index = frame_ids.len().checked_sub(1);
         widgets
@@ -2527,17 +2721,25 @@ impl Component for AppModel {
         widgets
             .nav_last_button
             .set_sensitive(has_frames && current_index != last_index);
-
-        set_picture_from_path(&widgets.preview_picture, self.preview_path.as_deref());
-        set_picture_from_path(&widgets.loop_preview_picture, self.preview_path.as_deref());
+        set_picture_from_path_if_needed(
+            &widgets.preview_picture,
+            self.preview_path.as_deref(),
+            &mut widgets.preview_picture_path,
+        );
+        set_picture_from_path_if_needed(
+            &widgets.loop_preview_picture,
+            self.preview_path.as_deref(),
+            &mut widgets.loop_preview_picture_path,
+        );
         let export_preview_path = self.export_preview_path.as_ref().filter(|_| {
             !should_refresh_preview(self.export_preview_rendered_size, self.preview_target_size)
         });
-        set_picture_from_path(
+        set_picture_from_path_if_needed(
             &widgets.export_preview_picture,
             export_preview_path
                 .or(self.preview_path.as_ref())
                 .map(PathBuf::as_path),
+            &mut widgets.export_preview_picture_path,
         );
         widgets.preview_meta.set_label(&self.preview_meta_text());
         widgets
@@ -2596,9 +2798,7 @@ impl Component for AppModel {
             .set_label(&self.loop_summary_text());
         set_spin_if_needed(&widgets.loop_repeats_spin, self.loop_repeats as f64);
         widgets.loop_create_button.set_sensitive(
-            has_frames
-                && (self.loop_scope == LoopScope::AllFrames || !self.selection.is_empty())
-                && !self.export_in_progress,
+            has_frames && (self.loop_scope == LoopScope::AllFrames || !self.selection.is_empty()),
         );
         set_widget_css_class(
             &widgets.loop_duplicate_button,
@@ -2632,7 +2832,9 @@ impl Component for AppModel {
             .map(|path| path.display().to_string())
             .unwrap_or_default();
         if widgets.output_entry.text().as_str() != output_text {
+            widgets.suppress_output_entry_change.set(true);
             widgets.output_entry.set_text(&output_text);
+            widgets.suppress_output_entry_change.set(false);
         }
         sync_combo_active_encoder_preset(
             &widgets.encoder_combo,
@@ -2693,23 +2895,28 @@ impl Component for AppModel {
             .export_summary_label
             .set_label(&self.export_summary_text());
         widgets.preview_export_button.set_sensitive(has_frames);
-        widgets.export_button.set_sensitive(
-            has_frames && self.last_output_path.is_some() && !self.export_in_progress,
-        );
+        widgets
+            .export_button
+            .set_sensitive(has_frames && self.last_output_path.is_some());
 
         self.sync_inspector_widgets(widgets);
 
-        while let Some(child) = widgets.timeline_strip.first_child() {
-            widgets.timeline_strip.remove(&child);
-        }
+        let timeline_render_signature = self.timeline_render_signature();
+        if widgets.timeline_render_signature != timeline_render_signature {
+            while let Some(child) = widgets.timeline_strip.first_child() {
+                widgets.timeline_strip.remove(&child);
+            }
 
-        for (index, frame) in self.timeline.frames().iter().enumerate() {
-            widgets.timeline_strip.append(&build_timeline_tile(
-                frame,
-                index,
-                self.selection.contains(&frame.id),
-                sender.clone(),
-            ));
+            for (index, frame) in self.timeline.frames().iter().enumerate() {
+                widgets.timeline_strip.append(&build_timeline_tile(
+                    frame,
+                    index,
+                    self.selection.contains(&frame.id),
+                    sender.clone(),
+                ));
+            }
+
+            widgets.timeline_render_signature = timeline_render_signature;
         }
     }
 }
@@ -3226,6 +3433,79 @@ impl AppModel {
             .sum()
     }
 
+    fn poll_export_state(&mut self, sender: &ComponentSender<Self>) {
+        let Some(export_worker_state) = self.export_worker_state.clone() else {
+            if let Some(active) = self.export_poll_active.take() {
+                active.set(false);
+            }
+            return;
+        };
+
+        let snapshot = match export_worker_state.lock() {
+            Ok(state) => state.clone(),
+            Err(_) => {
+                self.export_in_progress = false;
+                self.export_progress = None;
+                self.export_worker_state = None;
+                EXPORT_LAYOUT_WATCH_SUSPENDED.store(false, Ordering::Relaxed);
+                if let Some(active) = self.export_poll_active.take() {
+                    active.set(false);
+                }
+                self.status = "Export failed: background export state lock poisoned.".to_string();
+                return;
+            }
+        };
+
+        if let Some(progress) = snapshot.progress {
+            self.status = progress.detail.clone();
+            self.export_progress = Some(progress);
+        }
+
+        if let Some(result) = snapshot.result {
+            self.export_in_progress = false;
+            self.export_completion_pending = true;
+            self.export_worker_state = None;
+            self.export_progress = None;
+            if let Some(active) = self.export_poll_active.take() {
+                active.set(false);
+            }
+            match result {
+                Ok(job) => {
+                    self.last_output_path = Some(job.output_path.clone());
+                    self.status = format!("Exported {}", job.output_path.display());
+                }
+                Err(err) => {
+                    self.status = format!("Export failed: {err}");
+                }
+            }
+            let sender = sender.clone();
+            gtk::glib::timeout_add_local_once(Duration::from_millis(0), move || {
+                sender.input(AppMsg::FinalizeExportUi);
+            });
+        }
+    }
+
+    fn timeline_render_signature(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.timeline.frames().len().hash(&mut hasher);
+        for frame in self.timeline.frames() {
+            frame.id.hash(&mut hasher);
+            frame.source_path.hash(&mut hasher);
+            frame.thumbnail_path.hash(&mut hasher);
+            frame.enabled.hash(&mut hasher);
+            frame.duration_ms.hash(&mut hasher);
+            frame
+                .thumbnail_path
+                .as_deref()
+                .and_then(timeline_file_stamp)
+                .hash(&mut hasher);
+        }
+        for selected_id in &self.selection {
+            selected_id.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+
     fn readiness_text(&self) -> String {
         if self.export_in_progress {
             "Exporting".to_string()
@@ -3383,7 +3663,8 @@ impl AppModel {
     fn recompute_command_preview(&mut self) {
         let output_path = self
             .last_output_path
-            .clone()
+            .as_deref()
+            .map(normalized_output_path)
             .unwrap_or_else(|| PathBuf::from("output.webp"));
         self.command_preview = build_command_preview(
             Path::new("/tmp/awebpinator-preview.ffconcat"),
@@ -3887,19 +4168,37 @@ fn set_accessible_label(widget: &impl IsA<gtk::Accessible>, label: &str) {
 }
 
 fn install_window_layout_watch(window: &gtk::Window, sender: ComponentSender<AppModel>) {
+    let last_layout_mode = Rc::new(Cell::new(None));
     window.connect_map(clone!(
         #[strong]
         sender,
-        move |window| sender.input(AppMsg::WindowLayoutChanged(window.width()))
+        #[strong]
+        last_layout_mode,
+        move |window| send_window_layout_change(window, &sender, &last_layout_mode)
     ));
     window.connect_notify_local(
         Some("width"),
         clone!(
             #[strong]
             sender,
-            move |window, _| sender.input(AppMsg::WindowLayoutChanged(window.width()))
+            #[strong]
+            last_layout_mode,
+            move |window, _| send_window_layout_change(window, &sender, &last_layout_mode)
         ),
     );
+}
+
+fn send_window_layout_change(
+    window: &gtk::Window,
+    sender: &ComponentSender<AppModel>,
+    last_layout_mode: &Rc<Cell<Option<LayoutMode>>>,
+) {
+    let width = window.width();
+    let next_layout_mode = layout_mode_for_width(width);
+    if last_layout_mode.get() != Some(next_layout_mode) {
+        last_layout_mode.set(Some(next_layout_mode));
+        sender.input(AppMsg::WindowLayoutChanged(width));
+    }
 }
 
 fn install_autosave_on_close(window: &gtk::Window, sender: ComponentSender<AppModel>) {
@@ -3928,13 +4227,18 @@ fn install_preview_layout_watch(
     sender: ComponentSender<AppModel>,
 ) {
     let last_size = Rc::new(Cell::new(None));
+    let probe_active = Rc::new(Cell::new(false));
 
     preview_picture.connect_map(clone!(
         #[strong]
         sender,
         #[strong]
         last_size,
-        move |picture| send_preview_layout_change(picture, tab, &sender, &last_size)
+        #[strong]
+        probe_active,
+        move |picture| {
+            schedule_preview_layout_probe(picture, tab, &sender, &last_size, &probe_active)
+        }
     ));
     preview_picture.connect_notify_local(
         Some("width"),
@@ -3943,7 +4247,11 @@ fn install_preview_layout_watch(
             sender,
             #[strong]
             last_size,
-            move |picture, _| send_preview_layout_change(picture, tab, &sender, &last_size)
+            #[strong]
+            probe_active,
+            move |picture, _| {
+                schedule_preview_layout_probe(picture, tab, &sender, &last_size, &probe_active)
+            }
         ),
     );
     preview_picture.connect_notify_local(
@@ -3953,7 +4261,11 @@ fn install_preview_layout_watch(
             sender,
             #[strong]
             last_size,
-            move |picture, _| send_preview_layout_change(picture, tab, &sender, &last_size)
+            #[strong]
+            probe_active,
+            move |picture, _| {
+                schedule_preview_layout_probe(picture, tab, &sender, &last_size, &probe_active)
+            }
         ),
     );
     preview_picture.connect_notify_local(
@@ -3963,17 +4275,52 @@ fn install_preview_layout_watch(
             sender,
             #[strong]
             last_size,
-            move |picture, _| send_preview_layout_change(picture, tab, &sender, &last_size)
+            #[strong]
+            probe_active,
+            move |picture, _| {
+                schedule_preview_layout_probe(picture, tab, &sender, &last_size, &probe_active)
+            }
         ),
     );
-    preview_picture.add_tick_callback(clone!(
+}
+
+fn schedule_preview_layout_probe(
+    picture: &gtk::Picture,
+    tab: WorkflowTab,
+    sender: &ComponentSender<AppModel>,
+    last_size: &Rc<Cell<Option<PreviewRenderSize>>>,
+    probe_active: &Rc<Cell<bool>>,
+) {
+    if probe_active.get() {
+        return;
+    }
+
+    probe_active.set(true);
+    let stable_ticks = Rc::new(Cell::new(0_u8));
+    picture.add_tick_callback(clone!(
         #[strong]
         sender,
         #[strong]
         last_size,
+        #[strong]
+        probe_active,
+        #[strong]
+        stable_ticks,
         move |picture, _| {
-            send_preview_layout_change(picture, tab, &sender, &last_size);
-            gtk::glib::ControlFlow::Continue
+            let size_changed = send_preview_layout_change(picture, tab, &sender, &last_size);
+            if size_changed {
+                stable_ticks.set(0);
+                return gtk::glib::ControlFlow::Continue;
+            }
+
+            let next_stable_ticks = stable_ticks.get().saturating_add(1);
+            stable_ticks.set(next_stable_ticks);
+            if next_stable_ticks >= 3 {
+                probe_active.set(false);
+                gtk::glib::ControlFlow::Break
+            } else {
+                gtk::glib::ControlFlow::Continue
+            }
         }
     ));
 }
@@ -3994,16 +4341,90 @@ fn set_picture_from_path(picture: &gtk::Picture, path: Option<&Path>) {
     }
 }
 
+fn set_picture_from_path_if_needed(
+    picture: &gtk::Picture,
+    path: Option<&Path>,
+    cached_path: &mut Option<PathBuf>,
+) {
+    let next_path = path.map(Path::to_path_buf);
+    if *cached_path != next_path {
+        set_picture_from_path(picture, path);
+        *cached_path = next_path;
+    }
+}
+
+fn timeline_file_stamp(path: &Path) -> Option<(u64, u128)> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata.modified().ok()?;
+    let timestamp = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some((metadata.len(), timestamp))
+}
+
+fn install_export_poll(
+    sender: ComponentSender<AppModel>,
+    active: Rc<Cell<bool>>,
+    export_worker_state: Arc<Mutex<ExportWorkerState>>,
+) {
+    let last_version = Rc::new(Cell::new(0_u64));
+    gtk::glib::timeout_add_local(
+        Duration::from_millis(75),
+        clone!(
+            #[strong]
+            sender,
+            #[strong]
+            active,
+            #[strong]
+            export_worker_state,
+            #[strong]
+            last_version,
+            move || {
+                if !active.get() {
+                    return gtk::glib::ControlFlow::Break;
+                }
+
+                let snapshot = match export_worker_state.lock() {
+                    Ok(state) => state.clone(),
+                    Err(_) => {
+                        sender.input(AppMsg::PollExportState);
+                        active.set(false);
+                        return gtk::glib::ControlFlow::Break;
+                    }
+                };
+
+                let version = snapshot.version;
+                if version != last_version.get() {
+                    last_version.set(version);
+                    sender.input(AppMsg::PollExportState);
+                }
+
+                gtk::glib::ControlFlow::Continue
+            }
+        ),
+    );
+}
+
 fn send_preview_layout_change(
     widget: &impl IsA<gtk::Widget>,
     tab: WorkflowTab,
     sender: &ComponentSender<AppModel>,
     last_size: &Cell<Option<PreviewRenderSize>>,
-) {
+) -> bool {
+    if !widget.as_ref().is_visible() || !widget.as_ref().is_mapped() {
+        return false;
+    }
+    if EXPORT_LAYOUT_WATCH_SUSPENDED.load(Ordering::Relaxed) {
+        return false;
+    }
     let size = preview_render_size_for_widget(widget);
     if last_size.get() != Some(size) {
         last_size.set(Some(size));
         sender.input(AppMsg::PreviewLayoutChanged { tab, size });
+        true
+    } else {
+        false
     }
 }
 
@@ -4319,6 +4740,18 @@ fn set_check_if_needed(check: &gtk::CheckButton, value: bool) {
 fn set_switch_if_needed(switch: &gtk::Switch, value: bool) {
     if switch.is_active() != value {
         switch.set_active(value);
+    }
+}
+
+fn set_visible_if_needed(widget: &impl IsA<gtk::Widget>, visible: bool) {
+    if widget.as_ref().is_visible() != visible {
+        widget.as_ref().set_visible(visible);
+    }
+}
+
+fn set_stack_visible_child_name_if_needed(stack: &gtk::Stack, name: &str) {
+    if stack.visible_child_name().as_deref() != Some(name) {
+        stack.set_visible_child_name(name);
     }
 }
 

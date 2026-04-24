@@ -11,6 +11,105 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Remove export debug logs and reports
+
+- Status: Done
+- Request: Export now works; remove the temporary debugging logs, reports, and tracing scaffolding without regressing the background export flow or the completion-freeze fix.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/lib.rs`, `src/main.rs`, `Cargo.toml`, `/memories/repo/awebpinator-gtk-notes.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/lib.rs`, `src/main.rs`, `Cargo.toml`, `src/export_debug.rs`, `/memories/repo/awebpinator-gtk-notes.md`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Removed the temporary export logger module, tracing subscriber setup, debug-only status strings, and app/export diagnostic logging paths. The background worker thread, GLib poll loop, footer progress bar, deferred post-export UI restore, output-path normalization, and output-entry change suppression remain in place. Deleted `/tmp/awebpinator-export-logs/` after cleanup.
+
+### 2026-04-24 - Break output-entry feedback loop after export
+
+- Status: Done
+- Request: Export still froze after completion; the latest `post-export-msg` instrumentation identified an endless `AppMsg::SetOutputPath` loop alternating between the real output path and an empty string.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `/tmp/awebpinator-export-logs/export-session-0001.log`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: The root cause was programmatic `output_entry.set_text(...)` inside `update_view(...)` triggering the entry's `connect_changed` handler, which fed `SetOutputPath` back into Relm4 and retriggered `update_view(...)` indefinitely. The export output entry now suppresses its own `changed` handler while view sync writes the displayed path.
+
+### 2026-04-24 - Trace post-export message source
+
+- Status: Done
+- Request: Export still freezes after completion; the latest sampled log ruled out `PreviewLayoutChanged` as the repeating trigger because the redraw loop continued without any preview-layout entries.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `/tmp/awebpinator-export-logs/export-session-0001.log`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`
+- Notes: Window-width notifications now only emit `WindowLayoutChanged` when the app would actually switch between compact and regular layout modes. The component also now writes sampled `post-export-msg` entries for repeated `AppMsg` and `CommandMsg` traffic after export completion so the next freeze log identifies the exact message source rather than only the resulting redraw storm.
+
+### 2026-04-24 - Throttle post-export redraw diagnostics
+
+- Status: Done
+- Request: The latest export log kept growing into hundreds of thousands of lines, so reduce redraw-log volume before the next retest while keeping the signal needed to identify whether preview layout changes still drive the loop.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `/tmp/awebpinator-export-logs/export-session-0001.log`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Normal `update_view(...)` phase tracing now logs the first few redraw cycles in full and then samples later cycles instead of writing every pass. Accepted `PreviewLayoutChanged` messages now also emit a dedicated `preview-layout` marker with old/new sizes so the next export log can distinguish a true layout-driven loop from a generic redraw storm.
+
+### 2026-04-24 - Defer post-export UI restoration
+
+- Status: Done
+- Request: Export now stays responsive through encoding and result delivery, but the app still freezes immediately after the successful completion handoff.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, captured export session log
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: Successful export completion is now split across three GTK turns: `FinalizeExportUi`, `ResumePreviewLayoutWatch`, and `CompleteExportUiRestore`. Normal `update_view(...)` also now avoids redundant `set_visible(...)` and stack-child updates, and emits coarse `gtk-view-phase` markers so the next completion log can identify whether any remaining freeze is in layout sizing, tab visibility, footer sync, preview sync, inspector sync, or timeline sync.
+
+### 2026-04-24 - Short-circuit export-time view sync
+
+- Status: Done
+- Request: The captured export log still stops inside `update_with_view{input=ExportNow}` after the footer progress bar log line, before any deferred worker startup or GTK poll tick.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, captured export session log
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`
+- Notes: `update_view(...)` now takes an export-only fast-path at the top of the function before any layout, tab, preview, inspector, export-form, or timeline synchronization work. The footer progress bar stays mounted and shows `Idle` when not exporting, so export start no longer toggles the widget's visibility before yielding back to the main loop.
+
+### 2026-04-24 - Defer export worker start until next main-loop turn
+
+- Status: Done
+- Request: Export worker finishes and stores the result, but the GTK poll source never logs a tick; defer worker startup so the UI can return to the main loop and render the progress state before export begins.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/export_debug.rs`, captured export session log
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt`, `git diff --check`, `timeout 5s cargo run`
+- Notes: The captured session log still stopped before `StartExportWorker(...)` and before any GTK poll tick. The next mitigation keeps the footer progress bar permanently present to avoid a visibility-triggered relayout on export start and suspends preview-layout watch callbacks during export so footer changes cannot flood the main loop with `PreviewLayoutChanged` traffic.
+
+### 2026-04-24 - Add export freeze instrumentation logs
+
+- Status: Done
+- Request: Add detailed logging so a future export freeze shows exactly what stage is still alive and where the handoff stops.
+- Files inspected: `.ai/task_tracker.md`, `src/main.rs`, `src/lib.rs`, `src/app.rs`, `src/export.rs`, local Relm4 runtime source
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/export_debug.rs`, `src/lib.rs`, `src/main.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt`, `git diff --check`, `timeout 5s cargo run`
+- Notes: Added a persistent per-export debug log under `/tmp/awebpinator-export-logs/`, plus terminal tracing with thread IDs/names. The export worker now logs backend phases and blocking boundaries, the GTK poll timer logs heartbeats and version changes, the model logs result consumption, and `update_view` logs export progress-bar visibility/text changes so a future freeze can be localized to worker, poll, or GTK rendering.
+
+### 2026-04-24 - Eliminate export progress UI backlog freeze
+
+- Status: Done
+- Request: The UI still freezes during export and can remain frozen even after the file is fully written.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`
+- Verification: `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo fmt`, `git diff --check`, `timeout 5s cargo run`
+- Notes: The final shape also removes export completion from Relm4 command outputs. Export now runs on a dedicated `std::thread`, writes progress/completion into shared state, and the GTK main loop polls that state on a short timer. That avoids depending on command-output delivery for the UI to recover after ffmpeg exits. The footer progress bar is forced visible for the full export window and the generic footer status text is suppressed while exporting so the bar has room to render.
+
+### 2026-04-24 - Move export fully into background and show footer progress
+
+- Status: Done
+- Request: Make export a background process, show a progress bar in the footer, and fix the app appearing hung after export completes.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `Cargo.toml`, `src/app.rs`, `src/export.rs`, `src/thumbnail.rs`, `src/types.rs`, local Relm4 0.11.0 sender implementation
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run`, `git diff --check`
+- Notes: Export now uses a multi-message Relm4 background command instead of a single completion callback, so the footer can show live frame-render and ffmpeg encoding progress. ffmpeg now runs with `-nostdin` plus `-progress pipe:1`, and the app clears export state on completion instead of leaving the UI stuck waiting for a worker that never reported incremental status.
+
+### 2026-04-24 - Append WebP extension for extensionless exports
+
+- Status: Done
+- Request: Export fails when the selected output path has no extension because ffmpeg cannot infer the output format.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`
+- Verification: `cargo fmt`, `cargo test export::tests`, `cargo test app::tests::immediate_preview_uses_source_before_thumbnail_when_not_playing`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run 2>&1 | tee /tmp/awebpinator-export-path-fix-startup.log`, `rg -n "Gtk-CRITICAL|GLib-GObject-CRITICAL|gtk_scaler_new|g_object_unref" /tmp/awebpinator-export-path-fix-startup.log || true`, `git diff --check`
+- Notes: The failing path `/mnt/shared/True-VFX/TrueTERRAIN/Docs/Scatter/stable_positions/stable_test` has no extension, so ffmpeg reported `Unable to choose an output format`. Export now normalizes extensionless paths to `.webp` for command preview and actual export; text entry typing is left untouched until export to avoid disrupting path input.
+
 ### 2026-04-24 - Autosave project on close and restore on launch
 
 - Status: Done
