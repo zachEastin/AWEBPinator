@@ -15,7 +15,10 @@ use crate::export::{
 use crate::preferences::{UiPreferences, load_ui_preferences, save_ui_preferences};
 use crate::project::{load_autosave_project, load_project, save_autosave_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
-use crate::selection::{SelectionMode, apply_selection};
+use crate::selection::{
+    SelectionMode, apply_selection, clear_selection, extend_selection_by_step, extend_selection_to,
+    invert_selection, select_all,
+};
 use crate::thumbnail::{
     ensure_cache_dir, export_preview_cache_path, populate_frame_metadata, preview_cache_path,
     refresh_thumbnail, render_export_preview, render_preview,
@@ -68,6 +71,13 @@ pub enum AppMsg {
         id: u64,
         mode: SelectionMode,
     },
+    SelectAllFrames,
+    ClearSelection,
+    InvertSelection,
+    ExtendSelectionToBoundary {
+        end: bool,
+    },
+    ExtendSelectionByStep(isize),
     ToggleEnabled(u64, bool),
     SetFrameDuration(u64, u32),
     ApplyBatchDuration(u32),
@@ -1728,7 +1738,7 @@ impl Component for AppModel {
             .build();
         let nav_first_button = build_icon_button(
             "media-skip-backward-symbolic",
-            "Go to beginning (Ctrl+Left)",
+            "Go to beginning (Home or Ctrl+Left)",
         );
         let nav_prev_button =
             build_icon_button("media-seek-backward-symbolic", "Go back one frame (Left)");
@@ -1740,8 +1750,10 @@ impl Component for AppModel {
             "media-seek-forward-symbolic",
             "Go forward one frame (Right)",
         );
-        let nav_last_button =
-            build_icon_button("media-skip-forward-symbolic", "Go to end (Ctrl+Right)");
+        let nav_last_button = build_icon_button(
+            "media-skip-forward-symbolic",
+            "Go to end (End or Ctrl+Right)",
+        );
         for button in [
             &nav_first_button,
             &nav_prev_button,
@@ -1814,36 +1826,96 @@ impl Component for AppModel {
                 }
 
                 let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
-                let handled = match (ctrl, key) {
-                    (true, gdk::Key::c) | (true, gdk::Key::C) => {
+                let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
+                let alt = state.contains(gdk::ModifierType::ALT_MASK);
+                let handled = match (ctrl, shift, alt, key) {
+                    (true, false, false, gdk::Key::a) | (true, false, false, gdk::Key::A) => {
+                        sender.input(AppMsg::SelectAllFrames);
+                        true
+                    }
+                    (true, true, false, gdk::Key::a) | (true, true, false, gdk::Key::A) => {
+                        sender.input(AppMsg::ClearSelection);
+                        true
+                    }
+                    (true, false, false, gdk::Key::c) | (true, false, false, gdk::Key::C) => {
                         sender.input(AppMsg::CopySelection);
                         true
                     }
-                    (true, gdk::Key::v) | (true, gdk::Key::V) => {
+                    (true, false, false, gdk::Key::d) | (true, false, false, gdk::Key::D) => {
+                        sender.input(AppMsg::DuplicateSelection);
+                        true
+                    }
+                    (true, false, false, gdk::Key::i) | (true, false, false, gdk::Key::I) => {
+                        sender.input(AppMsg::InvertSelection);
+                        true
+                    }
+                    (true, false, false, gdk::Key::v) | (true, false, false, gdk::Key::V) => {
                         sender.input(AppMsg::PasteClipboard);
                         true
                     }
-                    (_, gdk::Key::Delete) | (_, gdk::Key::KP_Delete) => {
+                    (_, _, _, gdk::Key::Delete) | (_, _, _, gdk::Key::KP_Delete) => {
                         sender.input(AppMsg::RemoveSelection);
                         true
                     }
-                    (true, gdk::Key::Left) | (true, gdk::Key::KP_Left) => {
+                    (false, true, false, gdk::Key::Home)
+                    | (false, true, false, gdk::Key::KP_Home)
+                    | (true, true, false, gdk::Key::Left)
+                    | (true, true, false, gdk::Key::KP_Left) => {
+                        sender.input(AppMsg::ExtendSelectionToBoundary { end: false });
+                        true
+                    }
+                    (false, true, false, gdk::Key::End)
+                    | (false, true, false, gdk::Key::KP_End)
+                    | (true, true, false, gdk::Key::Right)
+                    | (true, true, false, gdk::Key::KP_Right) => {
+                        sender.input(AppMsg::ExtendSelectionToBoundary { end: true });
+                        true
+                    }
+                    (false, false, false, gdk::Key::Home)
+                    | (false, false, false, gdk::Key::KP_Home)
+                    | (true, false, false, gdk::Key::Left)
+                    | (true, false, false, gdk::Key::KP_Left) => {
                         sender.input(AppMsg::GoToBeginning);
                         true
                     }
-                    (false, gdk::Key::Left) | (false, gdk::Key::KP_Left) => {
+                    (false, true, false, gdk::Key::Left)
+                    | (false, true, false, gdk::Key::KP_Left) => {
+                        sender.input(AppMsg::ExtendSelectionByStep(-1));
+                        true
+                    }
+                    (false, false, true, gdk::Key::Up) | (false, false, true, gdk::Key::KP_Up) => {
+                        sender.input(AppMsg::MoveSelectionUp);
+                        true
+                    }
+                    (false, false, false, gdk::Key::Left)
+                    | (false, false, false, gdk::Key::KP_Left) => {
                         sender.input(AppMsg::StepBackward);
                         true
                     }
-                    (false, gdk::Key::space) | (false, gdk::Key::KP_Space) => {
+                    (false, false, false, gdk::Key::space)
+                    | (false, false, false, gdk::Key::KP_Space) => {
                         sender.input(AppMsg::TogglePlayback);
                         true
                     }
-                    (false, gdk::Key::Right) | (false, gdk::Key::KP_Right) => {
+                    (false, true, false, gdk::Key::Right)
+                    | (false, true, false, gdk::Key::KP_Right) => {
+                        sender.input(AppMsg::ExtendSelectionByStep(1));
+                        true
+                    }
+                    (false, false, true, gdk::Key::Down)
+                    | (false, false, true, gdk::Key::KP_Down) => {
+                        sender.input(AppMsg::MoveSelectionDown);
+                        true
+                    }
+                    (false, false, false, gdk::Key::Right)
+                    | (false, false, false, gdk::Key::KP_Right) => {
                         sender.input(AppMsg::StepForward);
                         true
                     }
-                    (true, gdk::Key::Right) | (true, gdk::Key::KP_Right) => {
+                    (false, false, false, gdk::Key::End)
+                    | (false, false, false, gdk::Key::KP_End)
+                    | (true, false, false, gdk::Key::Right)
+                    | (true, false, false, gdk::Key::KP_Right) => {
                         sender.input(AppMsg::GoToEnd);
                         true
                     }
@@ -2545,6 +2617,15 @@ impl Component for AppModel {
                     }
                 }
             }
+            AppMsg::SelectAllFrames => self.select_all_frames(&sender),
+            AppMsg::ClearSelection => self.clear_selected_frames(),
+            AppMsg::InvertSelection => self.invert_selected_frames(&sender),
+            AppMsg::ExtendSelectionToBoundary { end } => {
+                self.extend_selection_to_boundary(end, &sender);
+            }
+            AppMsg::ExtendSelectionByStep(offset) => {
+                self.extend_selection_by_step(offset, &sender);
+            }
             AppMsg::SelectFrame { id, mode } => {
                 let ordered_ids: Vec<_> = self
                     .timeline
@@ -2644,12 +2725,7 @@ impl Component for AppModel {
                 self.stop_playback(None);
                 let removed = self.selection.len();
                 self.timeline.remove_selected(&self.selection);
-                self.selection.clear();
-                self.selection_anchor_id = None;
-                self.preview_path = None;
-                self.preview_frame_id = None;
-                self.invalidate_export_preview();
-                self.sync_quick_resize_state_from_selection();
+                self.clear_selected_frames();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Removed {removed} frame(s)."),
@@ -2739,10 +2815,10 @@ impl Component for AppModel {
             }
             AppMsg::SetQuickResizePreset(preset) => {
                 self.quick_resize_preset = preset;
-                if preset == DimensionPreset::Custom {
-                    if self.quick_resize_custom_width == 0 || self.quick_resize_custom_height == 0 {
-                        self.seed_quick_resize_custom_dimensions();
-                    }
+                if preset == DimensionPreset::Custom
+                    && (self.quick_resize_custom_width == 0 || self.quick_resize_custom_height == 0)
+                {
+                    self.seed_quick_resize_custom_dimensions();
                 }
             }
             AppMsg::SetQuickResizeMode(mode) => {
@@ -3859,6 +3935,115 @@ impl AppModel {
         self.selection_anchor_id = Some(frame_id);
         self.sync_quick_resize_state_from_selection();
         self.queue_preview_for_primary_selection(sender);
+    }
+
+    fn apply_selection_state(
+        &mut self,
+        next: crate::selection::SelectionState,
+        sender: &ComponentSender<Self>,
+    ) {
+        self.selection = next.selection;
+        self.selection_anchor_id = next.anchor_id;
+        if self.selection.is_empty() {
+            self.preview_path = None;
+            self.preview_frame_id = None;
+            self.invalidate_export_preview();
+        }
+        self.sync_quick_resize_state_from_selection();
+        self.queue_preview_for_primary_selection(sender);
+    }
+
+    fn clear_selected_frames(&mut self) {
+        let next = clear_selection();
+        self.selection = next.selection;
+        self.selection_anchor_id = next.anchor_id;
+        self.preview_path = None;
+        self.preview_frame_id = None;
+        self.invalidate_export_preview();
+        self.sync_quick_resize_state_from_selection();
+        self.set_status(FooterStatusScope::Global, "Cleared timeline selection.");
+    }
+
+    fn select_all_frames(&mut self, sender: &ComponentSender<Self>) {
+        let frame_ids = self.timeline_frame_ids();
+        if frame_ids.is_empty() {
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
+            return;
+        }
+        let next = select_all(&frame_ids, self.selection_anchor_id);
+        self.apply_selection_state(next, sender);
+        self.set_status(
+            FooterStatusScope::Global,
+            format!("Selected all {} frame(s).", frame_ids.len()),
+        );
+    }
+
+    fn invert_selected_frames(&mut self, sender: &ComponentSender<Self>) {
+        let frame_ids = self.timeline_frame_ids();
+        if frame_ids.is_empty() {
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
+            return;
+        }
+        let next = invert_selection(&frame_ids, &self.selection, self.selection_anchor_id);
+        if next.selection.is_empty() {
+            self.clear_selected_frames();
+            return;
+        }
+        let selected_count = next.selection.len();
+        self.apply_selection_state(next, sender);
+        self.set_status(
+            FooterStatusScope::Global,
+            format!("Inverted selection to {} frame(s).", selected_count),
+        );
+    }
+
+    fn extend_selection_to_boundary(&mut self, end: bool, sender: &ComponentSender<Self>) {
+        self.stop_playback(None);
+        let frame_ids = self.timeline_frame_ids();
+        let target = if end {
+            frame_ids.last().copied()
+        } else {
+            frame_ids.first().copied()
+        };
+        let Some(frame_id) = target else {
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
+            return;
+        };
+        let next = extend_selection_to(
+            &frame_ids,
+            &self.selection,
+            self.selection_anchor_id,
+            frame_id,
+        );
+        self.apply_selection_state(next, sender);
+        let status = if end {
+            "Extended selection to last frame."
+        } else {
+            "Extended selection to first frame."
+        };
+        self.set_status(FooterStatusScope::Global, status);
+    }
+
+    fn extend_selection_by_step(&mut self, offset: isize, sender: &ComponentSender<Self>) {
+        self.stop_playback(None);
+        let frame_ids = self.timeline_frame_ids();
+        if frame_ids.is_empty() {
+            self.set_status(FooterStatusScope::Global, "No frames in timeline.");
+            return;
+        }
+        let next = extend_selection_by_step(
+            &frame_ids,
+            &self.selection,
+            self.selection_anchor_id,
+            offset,
+        );
+        self.apply_selection_state(next, sender);
+        let status = if offset < 0 {
+            "Extended selection back one frame."
+        } else {
+            "Extended selection forward one frame."
+        };
+        self.set_status(FooterStatusScope::Global, status);
     }
 
     fn navigate_to_boundary(&mut self, end: bool, sender: &ComponentSender<Self>) {
@@ -6662,6 +6847,14 @@ mod tests {
         assert_eq!(step_frame_id(&frame_ids, Some(20), -1), Some(10));
         assert_eq!(step_frame_id(&frame_ids, Some(20), 1), Some(30));
         assert_eq!(step_frame_id(&frame_ids, Some(30), 1), Some(30));
+    }
+
+    #[test]
+    fn step_frame_navigation_returns_none_for_empty_timeline() {
+        let frame_ids = Vec::new();
+
+        assert_eq!(step_frame_id(&frame_ids, None, -1), None);
+        assert_eq!(step_frame_id(&frame_ids, None, 1), None);
     }
 
     #[test]

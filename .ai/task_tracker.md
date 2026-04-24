@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Expand timeline keyboard shortcuts
+
+- Status: Done
+- Request: Add Home/End navigation, additive Shift range-selection shortcuts, Ctrl+A select all, Ctrl+I invert selection, Ctrl+Shift+A clear selection, Ctrl+D duplicate, and Alt+Up/Down reordering for the timeline while preserving text-entry focus behavior, then refine `Shift+Arrow` so it grows from the first unselected frame in the pressed direction and moves the keyboard anchor each time.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/selection.rs`, `README.md`, `AGENTS.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/selection.rs`
+- Verification: `cargo fmt --all`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run >/tmp/awebpinator-timeline-shortcuts-smoke.log 2>&1`, `git diff --check`
+- Notes: Added keyboard-only selection commands on top of the existing capture-phase key controller: Home/End navigation, additive Shift range extension for boundaries, select all, clear selection, invert selection, duplicate, and Alt+Up/Down reordering. Refined `Shift+Left/Right` to grow from the first unselected frame in the pressed direction and update the keyboard anchor to that newly selected frame after each press, so repeated key presses continue expanding outward naturally. Selection math now lives in reusable helpers under `src/selection.rs` with unit coverage for additive range extension, directional step extension, select all, clear, and invert semantics. The bounded GTK startup smoke timed out with exit code `124` after launching `target/debug/awebpinator`, with no panic or abort output in the captured log.
+
 ### 2026-04-24 - Install packaging icon into Fedora desktop integration
 
 - Status: Done
