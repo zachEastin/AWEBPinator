@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::export::{build_command_preview, export_animation};
 use crate::preferences::{UiPreferences, load_ui_preferences, save_ui_preferences};
-use crate::project::{load_project, save_project};
+use crate::project::{load_autosave_project, load_project, save_autosave_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
 use crate::selection::{SelectionMode, apply_selection};
 use crate::thumbnail::{
@@ -106,6 +106,10 @@ pub enum AppMsg {
     OpenProject(PathBuf),
     ChooseOutputPath(PathBuf),
     ExportNow,
+    CloseWithAutosave {
+        window: gtk::Window,
+        close_allowed: Rc<Cell<bool>>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +476,20 @@ impl Component for AppModel {
             playback_generation: 0,
             thumbnails_pending: 0,
             export_in_progress: false,
+        };
+        let restored_frame_ids = match load_autosave_project() {
+            Ok(Some(document)) => {
+                let ids = model.apply_project_document(document);
+                model.status = format!("Restored autosaved project with {} frame(s).", ids.len());
+                ids
+            }
+            Ok(None) => Vec::new(),
+            Err(err) => {
+                model.status = format!(
+                    "Import images to begin building an animated WebP. Autosave could not be loaded: {err}"
+                );
+                Vec::new()
+            }
         };
         model.recompute_command_preview();
 
@@ -1809,6 +1827,7 @@ impl Component for AppModel {
 
         install_import_drop_targets(&root, sender.clone());
         install_window_layout_watch(&window, sender.clone());
+        install_autosave_on_close(&window, sender.clone());
 
         let widgets = AppWidgets {
             workspace_box,
@@ -1898,6 +1917,11 @@ impl Component for AppModel {
             resize_h,
             inspector_fit_combo,
         };
+
+        if !restored_frame_ids.is_empty() {
+            model.refresh_frame_jobs(restored_frame_ids, &sender);
+            model.queue_preview_for_primary_selection(&sender);
+        }
 
         ComponentParts { model, widgets }
     }
@@ -2216,11 +2240,7 @@ impl Component for AppModel {
             }
             AppMsg::SetRawArgs(args) => self.export_profile.raw_args = args,
             AppMsg::SaveProject(path) => {
-                let document = ProjectDocument {
-                    frames: self.timeline.frames().to_vec(),
-                    export_profile: self.export_profile.clone(),
-                    last_output_path: self.last_output_path.clone(),
-                };
+                let document = self.project_document();
                 match save_project(&path, &document) {
                     Ok(_) => self.status = format!("Saved project to {}", path.display()),
                     Err(err) => self.status = format!("Failed to save project: {err}"),
@@ -2230,26 +2250,11 @@ impl Component for AppModel {
                 self.stop_playback(None);
                 match load_project(&path) {
                     Ok(document) => {
-                        let ids: Vec<_> = document.frames.iter().map(|frame| frame.id).collect();
-                        self.timeline = Timeline::from_frames(document.frames);
-                        self.selection = ids.into_iter().collect();
-                        self.selection_anchor_id =
-                            self.timeline.frames().first().map(|frame| frame.id);
-                        self.export_profile = document.export_profile;
-                        self.last_output_path = document.last_output_path;
-                        self.preview_path = None;
-                        self.preview_frame_id = None;
-                        self.invalidate_export_preview();
+                        let frame_ids = self.apply_project_document(document);
                         self.status = format!(
                             "Loaded project {}. Refreshing thumbnails...",
                             path.display()
                         );
-                        let frame_ids = self
-                            .timeline
-                            .frames()
-                            .iter()
-                            .map(|frame| frame.id)
-                            .collect();
                         self.refresh_frame_jobs(frame_ids, &sender);
                         self.queue_preview_for_primary_selection(&sender);
                     }
@@ -2278,6 +2283,16 @@ impl Component for AppModel {
                     result: export_animation(&frames, &profile, &output_path)
                         .map_err(|err| err.to_string()),
                 });
+            }
+            AppMsg::CloseWithAutosave {
+                window,
+                close_allowed,
+            } => {
+                if let Err(err) = self.save_autosave_project() {
+                    self.status = format!("Autosave failed during close: {err}");
+                }
+                close_allowed.set(true);
+                window.close();
             }
         }
 
@@ -2852,6 +2867,33 @@ impl AppModel {
         if let Some(status) = status {
             self.status = status.to_string();
         }
+    }
+
+    fn project_document(&self) -> ProjectDocument {
+        ProjectDocument {
+            frames: self.timeline.frames().to_vec(),
+            export_profile: self.export_profile.clone(),
+            last_output_path: self.last_output_path.clone(),
+        }
+    }
+
+    fn apply_project_document(&mut self, document: ProjectDocument) -> Vec<u64> {
+        let ids: Vec<_> = document.frames.iter().map(|frame| frame.id).collect();
+        self.timeline = Timeline::from_frames(document.frames);
+        self.selection = ids.iter().copied().collect();
+        self.selection_anchor_id = self.timeline.frames().first().map(|frame| frame.id);
+        self.export_profile = document.export_profile;
+        self.last_output_path = document.last_output_path;
+        self.preview_path = None;
+        self.preview_frame_id = None;
+        self.preview_rendered_size = None;
+        self.invalidate_export_preview();
+        ids
+    }
+
+    fn save_autosave_project(&self) -> anyhow::Result<()> {
+        let _ = save_autosave_project(&self.project_document())?;
+        Ok(())
     }
 
     fn refresh_frame_jobs(&mut self, frame_ids: Vec<u64>, sender: &ComponentSender<Self>) {
@@ -3858,6 +3900,26 @@ fn install_window_layout_watch(window: &gtk::Window, sender: ComponentSender<App
             move |window, _| sender.input(AppMsg::WindowLayoutChanged(window.width()))
         ),
     );
+}
+
+fn install_autosave_on_close(window: &gtk::Window, sender: ComponentSender<AppModel>) {
+    let close_allowed = Rc::new(Cell::new(false));
+    window.connect_close_request(clone!(
+        #[strong]
+        sender,
+        #[strong]
+        close_allowed,
+        move |window| {
+            if close_allowed.get() {
+                return gtk::glib::Propagation::Proceed;
+            }
+            sender.input(AppMsg::CloseWithAutosave {
+                window: window.clone(),
+                close_allowed: close_allowed.clone(),
+            });
+            gtk::glib::Propagation::Stop
+        }
+    ));
 }
 
 fn install_preview_layout_watch(

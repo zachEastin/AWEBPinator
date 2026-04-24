@@ -9,6 +9,7 @@ The current app is written in Rust with GTK4/Relm4 and supports:
 - basic non-destructive transforms on selected frames
 - animated WebP export through `ffmpeg`
 - project save/load
+- automatic session restore from the last clean window close
 
 ## Requirements
 
@@ -57,6 +58,12 @@ For the release binary:
 ```bash
 ./target/release/awebpinator
 ```
+
+## Session Restore
+
+When the main window closes normally, AWEBPinator saves the current project state automatically and restores it the next time the app starts. The autosave uses the same project JSON format as manual save/load and stores frames, order, durations, transforms, export settings, and the last output path.
+
+The autosave file is stored under the user state/config area, preferring `$XDG_STATE_HOME/awebpinator/autosave.awebp.json`, then `$XDG_CONFIG_HOME/awebpinator/autosave.awebp.json`, and finally `$HOME/.local/state/awebpinator/autosave.awebp.json`.
 
 ## Test
 

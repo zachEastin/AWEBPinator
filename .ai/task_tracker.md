@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Autosave project on close and restore on launch
+
+- Status: Done
+- Request: Save a temporary project automatically on close and reopen with the same frames and effects loaded.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/project.rs`, `src/preferences.rs`, `src/types.rs`, `src/timeline.rs`
+- Files changed: `.ai/task_tracker.md`, `README.md`, `src/app.rs`, `src/project.rs`, `tests/gui/smoke.py`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, Dogtail `window.close` check with temporary `XDG_STATE_HOME` confirming `autosave.awebp.json` creation, temporary autosave launch check showing restored `1 frame selected`, `python3 tests/gui/smoke.py`, `python3 -m py_compile tests/gui/smoke.py`, `timeout 5s cargo run 2>&1 | tee /tmp/awebpinator-autosave-startup-2.log`, `rg -n "Gtk-CRITICAL|GLib-GObject-CRITICAL|gtk_scaler_new|g_object_unref" /tmp/awebpinator-autosave-startup-2.log || true`, `git diff --check`
+- Notes: Autosave reuses `ProjectDocument` JSON at `$XDG_STATE_HOME/awebpinator/autosave.awebp.json`, falling back through `$XDG_CONFIG_HOME` and `$HOME/.local/state`. The close handler stops the first close request, saves synchronously, then allows the second close request to proceed.
+
 ### 2026-04-23 - Stop preview fallback from returning to proxy resolution
 
 - Status: Done

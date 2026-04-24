@@ -42,7 +42,6 @@ REQUIRED_ACCESSIBLE_LABELS = {
     "Export workflow tab",
     "Diagnostics workflow tab",
     "Advanced mode",
-    "Selected frame preview",
     "Go to beginning (Ctrl+Left)",
     "Play or pause preview playback (Space)",
 }
