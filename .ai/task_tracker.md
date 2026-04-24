@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Make Timeline sections collapsible and split evenly
+
+- Status: Done
+- Request: Make the Timeline tab sections collapsible like the Edit tab and keep the left and right Timeline columns at a 50/50 width split.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `git diff --check`, `python3 tests/gui/smoke.py`, `timeout 5s cargo run`
+- Notes: Timeline Actions, Clipboard And Order, Loop, Preview, and Loop Summary now use the same collapsible card treatment as Edit. The Timeline left/right columns now use a homogeneous horizontal box with both columns allowed to expand so the regular layout stays 50/50. `python3 tests/gui/smoke.py` continued to intermittently miss `Import Images`, `Open Project`, and `Save Project`, which are housed in the `Secondary actions` popover and were not changed by this patch. In this environment, `timeout 5s cargo run` again exited immediately with code `0`, so it was not counted as a timeout-smoke pass.
+
 ### 2026-04-24 - Reframe Loop tab as Timeline workspace
 
 - Status: Done

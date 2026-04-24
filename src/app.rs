@@ -385,7 +385,6 @@ pub struct AppWidgets {
     preview_picture: gtk::Picture,
     preview_meta: gtk::Label,
     loop_preview_picture: gtk::Picture,
-    loop_preview_meta: gtk::Label,
     export_preview_picture: gtk::Picture,
     crop_summary_label: gtk::Label,
     crop_square_button: gtk::Button,
@@ -733,10 +732,6 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
-        organize_page.append(&page_heading(
-            "Organize Frames",
-            "Import images, arrange the timeline, and prepare the sequence.",
-        ));
         let organize_actions = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
@@ -774,10 +769,6 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
-        edit_page.append(&page_heading(
-            "Quick Edits",
-            "Simple tools to improve your selected frames without a dense technical inspector.",
-        ));
         let quick_actions_grid = gtk::Grid::builder()
             .column_spacing(8)
             .row_spacing(8)
@@ -975,88 +966,16 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
-        loop_page.append(&page_heading(
-            "Timeline Adjustments",
-            "Manage frame order, durations, clipboard actions, and loop automation from one place.",
-        ));
         let loop_body = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(12)
+            .homogeneous(true)
             .build();
         let loop_left = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
+            .hexpand(true)
             .build();
-        let timeline_selection_actions = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .build();
-        let selection_action_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let duplicate_button =
-            build_labeled_button("Duplicate", "edit-copy-symbolic", "icon-tone-cyan");
-        let remove_button =
-            build_labeled_button("Remove", "edit-delete-symbolic", "icon-tone-coral");
-        for button in [&duplicate_button, &remove_button] {
-            button.add_css_class("pill-button");
-            selection_action_row.append(button);
-        }
-        let batch_duration_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let batch_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
-        set_accessible_label(&batch_duration_spin, "Timeline batch duration");
-        batch_duration_spin.set_value(100.0);
-        let batch_duration_button = build_labeled_button(
-            "Set Duration",
-            "preferences-system-time-symbolic",
-            "icon-tone-amber",
-        );
-        batch_duration_button.add_css_class("pill-button");
-        batch_duration_row.append(&gtk::Label::new(Some("Selected Frames")));
-        batch_duration_row.append(&batch_duration_spin);
-        batch_duration_row.append(&batch_duration_button);
-        timeline_selection_actions.append(&helper_label(
-            "Apply common duration and selection actions without crowding the timeline strip itself.",
-        ));
-        timeline_selection_actions.append(&selection_action_row);
-        timeline_selection_actions.append(&batch_duration_row);
-        loop_left.append(&section("Timeline Actions", &timeline_selection_actions));
-
-        let timeline_order_actions = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .build();
-        let clipboard_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let copy_button = build_labeled_button("Copy", "edit-copy-symbolic", "icon-tone-cyan");
-        let paste_button = build_labeled_button("Paste", "edit-paste-symbolic", "icon-tone-green");
-        for button in [&copy_button, &paste_button] {
-            button.add_css_class("pill-button");
-            clipboard_row.append(button);
-        }
-        let order_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let move_up_button = build_labeled_button("Move Up", "go-up-symbolic", "icon-tone-amber");
-        let move_down_button =
-            build_labeled_button("Move Down", "go-down-symbolic", "icon-tone-amber");
-        for button in [&move_up_button, &move_down_button] {
-            button.add_css_class("pill-button");
-            order_row.append(button);
-        }
-        timeline_order_actions.append(&helper_label(
-            "Copy, paste, and reposition frames here while drag reorder remains available in the timeline below.",
-        ));
-        timeline_order_actions.append(&clipboard_row);
-        timeline_order_actions.append(&order_row);
-        loop_left.append(&section("Clipboard And Order", &timeline_order_actions));
 
         let loop_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1131,7 +1050,88 @@ impl Component for AppModel {
         loop_controls.append(&loop_scope_row);
         loop_controls.append(&loop_create_button);
         loop_box.append(&loop_controls);
-        loop_left.append(&section("Loop", &loop_box));
+        loop_left.append(&collapsible_section("Loop", &loop_box, true));
+
+        let timeline_selection_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        let selection_action_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let duplicate_button =
+            build_labeled_button("Duplicate", "edit-copy-symbolic", "icon-tone-cyan");
+        let remove_button =
+            build_labeled_button("Remove", "edit-delete-symbolic", "icon-tone-coral");
+        for button in [&duplicate_button, &remove_button] {
+            button.add_css_class("pill-button");
+            selection_action_row.append(button);
+        }
+        let batch_duration_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let batch_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
+        set_accessible_label(&batch_duration_spin, "Timeline batch duration");
+        batch_duration_spin.set_value(100.0);
+        let batch_duration_button = build_labeled_button(
+            "Set Duration",
+            "preferences-system-time-symbolic",
+            "icon-tone-amber",
+        );
+        batch_duration_button.add_css_class("pill-button");
+        batch_duration_row.append(&gtk::Label::new(Some("Selected Frames")));
+        batch_duration_row.append(&batch_duration_spin);
+        batch_duration_row.append(&batch_duration_button);
+        timeline_selection_actions.append(&helper_label(
+            "Apply common duration and selection actions without crowding the timeline strip itself.",
+        ));
+        timeline_selection_actions.append(&selection_action_row);
+        timeline_selection_actions.append(&batch_duration_row);
+        loop_left.append(&collapsible_section(
+            "Timeline Actions",
+            &timeline_selection_actions,
+            true,
+        ));
+
+        let timeline_order_actions = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        let clipboard_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let copy_button = build_labeled_button("Copy", "edit-copy-symbolic", "icon-tone-cyan");
+        let paste_button = build_labeled_button("Paste", "edit-paste-symbolic", "icon-tone-green");
+        for button in [&copy_button, &paste_button] {
+            button.add_css_class("pill-button");
+            clipboard_row.append(button);
+        }
+        let order_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let move_up_button = build_labeled_button("Move Up", "go-up-symbolic", "icon-tone-amber");
+        let move_down_button =
+            build_labeled_button("Move Down", "go-down-symbolic", "icon-tone-amber");
+        for button in [&move_up_button, &move_down_button] {
+            button.add_css_class("pill-button");
+            order_row.append(button);
+        }
+        timeline_order_actions.append(&helper_label(
+            "Copy, paste, and reposition frames here while drag reorder remains available in the timeline below.",
+        ));
+        timeline_order_actions.append(&clipboard_row);
+        timeline_order_actions.append(&order_row);
+        loop_left.append(&collapsible_section(
+            "Clipboard And Order",
+            &timeline_order_actions,
+            false,
+        ));
+        
+        // Left Side
         let loop_right = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
@@ -1148,14 +1148,15 @@ impl Component for AppModel {
         loop_preview_picture.set_hexpand(true);
         loop_preview_picture.set_vexpand(true);
         install_preview_layout_watch(&loop_preview_picture, WorkflowTab::Loop, sender.clone());
-        let loop_preview_meta =
-            helper_label("Preview the selected range to judge how smooth the loop feels.");
         loop_preview_box.append(&loop_preview_picture);
-        loop_preview_box.append(&loop_preview_meta);
         loop_right.append(&section("Preview", &loop_preview_box));
         let loop_summary_label =
             summary_label("Choose a loop method to preview the result of the current range.");
-        loop_right.append(&section("Loop Summary", &loop_summary_label));
+        loop_right.append(&collapsible_section(
+            "Loop Summary",
+            &loop_summary_label,
+            true,
+        ));
         loop_body.append(&loop_right);
         loop_body.append(&loop_left);
         loop_page.append(&loop_body);
@@ -1516,10 +1517,6 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(12)
             .build();
-        diagnostics_page.append(&page_heading(
-            "Diagnostics",
-            "Run a quick health check when export fails or something feels off.",
-        ));
         let diagnostics_page_button =
             build_labeled_button("Run Diagnostics", "system-run-symbolic", "icon-tone-coral");
         diagnostics_page_button.add_css_class("suggested-action");
@@ -2218,7 +2215,6 @@ impl Component for AppModel {
             preview_picture,
             preview_meta,
             loop_preview_picture,
-            loop_preview_meta,
             export_preview_picture,
             crop_summary_label,
             crop_square_button,
@@ -3086,9 +3082,6 @@ impl Component for AppModel {
                     self.selection.contains(&frame.id) && frame.transform_spec.crop.is_some()
                 }),
         );
-        widgets
-            .loop_preview_meta
-            .set_label(&self.loop_preview_meta_text());
         widgets
             .loop_source_label
             .set_label(&self.loop_source_text());
@@ -4040,17 +4033,6 @@ impl AppModel {
         format!("~ {:.1} MB", mb)
     }
 
-    fn loop_preview_meta_text(&self) -> String {
-        if self.selection.is_empty() && self.loop_scope == LoopScope::Selected {
-            return "Select a range in the timeline to preview how the loop will feel.".to_string();
-        }
-        format!(
-            "{}\n{}",
-            self.preview_meta_text(),
-            self.loop_method.helper_text()
-        )
-    }
-
     fn selection_dimension_preset(&self) -> DimensionPreset {
         match self
             .primary_selected_frame()
@@ -4667,24 +4649,6 @@ fn attach_summary_row(grid: &gtk::Grid, row: i32, label: &str, value: &gtk::Labe
     key.add_css_class("summary-key");
     grid.attach(&key, 0, row, 1, 1);
     grid.attach(value, 1, row, 1, 1);
-}
-
-fn page_heading(title: &str, subtitle: &str) -> gtk::Box {
-    let box_widget = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .spacing(6)
-        .build();
-    box_widget.add_css_class("page-heading");
-    let title_label = gtk::Label::new(Some(title));
-    title_label.set_xalign(0.0);
-    title_label.add_css_class("title-3");
-    title_label.add_css_class("page-heading-title");
-    let subtitle_label = helper_label(subtitle);
-    subtitle_label.set_max_width_chars(58);
-    subtitle_label.add_css_class("page-heading-subtitle");
-    box_widget.append(&title_label);
-    box_widget.append(&subtitle_label);
-    box_widget
 }
 
 fn page_scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
