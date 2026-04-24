@@ -765,6 +765,7 @@ impl Component for AppModel {
             .transition_type(gtk::StackTransitionType::Crossfade)
             .build();
         workspace_box.append(&page_stack);
+        install_workspace_split_watch(&workspace_box, &preview_panel, &page_stack);
 
         let organize_page = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -811,6 +812,9 @@ impl Component for AppModel {
             .column_spacing(8)
             .row_spacing(8)
             .build();
+        quick_actions_grid.set_column_homogeneous(true);
+        quick_actions_grid.set_row_homogeneous(true);
+        quick_actions_grid.set_hexpand(true);
         let rotate_left_button = build_labeled_button(
             "Rotate Left",
             "object-rotate-left-symbolic",
@@ -838,17 +842,20 @@ impl Component for AppModel {
             &flip_vertical_button,
         ] {
             button.add_css_class("pill-button");
+            button.add_css_class("edit-quick-action");
+            button.set_hexpand(true);
+            button.set_vexpand(true);
+            button.set_halign(gtk::Align::Fill);
+            button.set_valign(gtk::Align::Fill);
         }
         quick_actions_grid.attach(&rotate_left_button, 0, 0, 1, 1);
         quick_actions_grid.attach(&rotate_right_button, 1, 0, 1, 1);
         quick_actions_grid.attach(&flip_horizontal_button, 0, 1, 1, 1);
         quick_actions_grid.attach(&flip_vertical_button, 1, 1, 1, 1);
-        edit_page.append(&section("Quick Actions", &quick_actions_grid));
+        let quick_actions_section = section("Quick Actions", &quick_actions_grid);
+        quick_actions_section.set_hexpand(true);
+        edit_page.append(&quick_actions_section);
 
-        let quick_adjustments = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(10)
-            .build();
         let crop_preset_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(10)
@@ -856,19 +863,19 @@ impl Component for AppModel {
             .build();
         let crop_square_button = build_choice_button(
             "Square",
-            "1:1 crop for thumbnails and profile-style framing.",
+            "1:1",
             "image-x-generic-symbolic",
             "icon-tone-cyan",
         );
         let crop_widescreen_button = build_choice_button(
             "Widescreen",
-            "16:9 crop for banners and video-like framing.",
+            "16:9",
             "video-x-generic-symbolic",
             "icon-tone-green",
         );
         let crop_story_button = build_choice_button(
             "Story",
-            "9:16 crop for vertical posts and stories.",
+            "9:16",
             "camera-photo-symbolic",
             "icon-tone-coral",
         );
@@ -884,14 +891,14 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let crop_start_button =
-            build_labeled_button("Keep Start", "go-first-symbolic", "icon-tone-cyan");
+            build_labeled_button("Anchor Left", "go-first-symbolic", "icon-tone-cyan");
         let crop_center_button = build_labeled_button(
-            "Center",
+            "Anchor Center",
             "align-horizontal-center-symbolic",
             "icon-tone-green",
         );
         let crop_end_button =
-            build_labeled_button("Keep End", "go-last-symbolic", "icon-tone-coral");
+            build_labeled_button("Anchor Right", "go-last-symbolic", "icon-tone-coral");
         for button in [&crop_start_button, &crop_center_button, &crop_end_button] {
             button.add_css_class("pill-button");
             crop_anchor_row.append(button);
@@ -901,15 +908,23 @@ impl Component for AppModel {
             .spacing(8)
             .build();
         let apply_crop_button =
-            build_labeled_button("Apply Crop", "emblem-ok-symbolic", "icon-tone-green");
+            build_labeled_button("Apply", "emblem-ok-symbolic", "icon-tone-green");
         apply_crop_button.add_css_class("suggested-action");
         let clear_crop_button =
-            build_labeled_button("Clear Crop", "edit-clear-symbolic", "icon-tone-coral");
+            build_labeled_button("Clear", "edit-clear-symbolic", "icon-tone-coral");
         clear_crop_button.add_css_class("pill-button");
         crop_action_row.append(&apply_crop_button);
         crop_action_row.append(&clear_crop_button);
         let crop_summary_label =
             summary_label("Choose a crop shape, then apply it to the selected frames.");
+        let crop_controls_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(10)
+            .build();
+        crop_controls_box.append(&crop_preset_row);
+        crop_controls_box.append(&crop_anchor_row);
+        crop_controls_box.append(&crop_action_row);
+        crop_controls_box.append(&crop_summary_label);
         let quick_resize_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -917,30 +932,20 @@ impl Component for AppModel {
         let quick_resize_combo = combo_for_dimension_preset();
         set_accessible_label(&quick_resize_combo, "Quick resize preset");
         let quick_apply_button = build_labeled_button(
-            "Apply to Selected Frames",
+            "Apply",
             "emblem-ok-symbolic",
             "icon-tone-green",
         );
         quick_apply_button.add_css_class("suggested-action");
-        quick_resize_row.append(&gtk::Label::new(Some("Resize")));
         quick_resize_row.append(&quick_resize_combo);
         quick_resize_row.append(&quick_apply_button);
-        quick_adjustments.append(&helper_label(
-            "Choose a quick action, then apply size or duration changes to the selected frames.",
-        ));
-        quick_adjustments.append(&section("Guided Crop", &crop_preset_row));
-        quick_adjustments.append(&crop_anchor_row);
-        quick_adjustments.append(&crop_action_row);
-        quick_adjustments.append(&crop_summary_label);
-        quick_adjustments.append(&quick_resize_row);
-        quick_adjustments.append(&helper_label(
-            "Need more precise crop, resize, or fit controls? Turn on Advanced.",
-        ));
-        edit_page.append(&collapsible_section(
-            "Adjustments",
-            &quick_adjustments,
-            true,
-        ));
+        let quick_resize_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        quick_resize_box.append(&quick_resize_row);
+        edit_page.append(&section("Guided Crop", &crop_controls_box));
+        edit_page.append(&section("Resize", &quick_resize_box));
 
         let edit_advanced_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -3031,7 +3036,6 @@ impl Component for AppModel {
             },
         );
         set_box_orientation_if_needed(&widgets.timeline_toolbar, gtk::Orientation::Horizontal);
-        set_width_request_if_needed(&widgets.content_stack, -1);
         set_width_request_if_needed(&widgets.loop_settings_column, -1);
         set_width_request_if_needed(&widgets.export_settings_column, -1);
         set_size_request_if_needed(
@@ -3058,6 +3062,11 @@ impl Component for AppModel {
         set_visible_if_needed(
             &widgets.preview_panel,
             matches!(self.active_tab, WorkflowTab::Organize | WorkflowTab::Edit),
+        );
+        sync_workspace_split_widths(
+            &widgets.workspace_box,
+            &widgets.preview_panel,
+            &widgets.content_stack,
         );
         set_visible_if_needed(&widgets.edit_advanced_box, self.advanced_mode);
         set_visible_if_needed(&widgets.export_advanced_box, self.advanced_mode);
@@ -5058,6 +5067,26 @@ fn install_window_layout_watch(window: &gtk::Window, sender: ComponentSender<App
     );
 }
 
+fn install_workspace_split_watch(
+    workspace_box: &gtk::Box,
+    preview_panel: &gtk::Box,
+    content_stack: &gtk::Stack,
+) {
+    sync_workspace_split_widths(workspace_box, preview_panel, content_stack);
+    workspace_box.connect_notify_local(
+        Some("width"),
+        clone!(
+            #[strong]
+            preview_panel,
+            #[strong]
+            content_stack,
+            move |box_widget, _| {
+                sync_workspace_split_widths(box_widget, &preview_panel, &content_stack);
+            }
+        ),
+    );
+}
+
 fn send_window_layout_change(
     window: &gtk::Window,
     sender: &ComponentSender<AppModel>,
@@ -5407,6 +5436,7 @@ fn install_app_css(window: &gtk::Window) {
             font-weight: 700;
         }
         .suggested-action {
+            border-radius: 10px;
             background: #2d6cdf;
             border-color: #6fa7ff;
         }
@@ -5423,6 +5453,10 @@ fn install_app_css(window: &gtk::Window) {
         }
         .choice-card-active {
             box-shadow: inset 0 0 0 1px #5a9bff;
+        }
+        .edit-quick-action {
+            min-height: 76px;
+            padding: 14px 18px;
         }
         .page-heading {
             margin-bottom: 2px;
@@ -5795,10 +5829,38 @@ fn set_box_orientation_if_needed(box_widget: &gtk::Box, orientation: gtk::Orient
     }
 }
 
+fn set_hexpand_if_needed(widget: &impl IsA<gtk::Widget>, expands: bool) {
+    if widget.as_ref().hexpands() != expands {
+        widget.as_ref().set_hexpand(expands);
+    }
+}
+
 fn set_width_request_if_needed(widget: &impl IsA<gtk::Widget>, value: i32) {
     if widget.as_ref().width_request() != value {
         widget.as_ref().set_width_request(value);
     }
+}
+
+fn sync_workspace_split_widths(
+    workspace_box: &gtk::Box,
+    preview_panel: &gtk::Box,
+    content_stack: &gtk::Stack,
+) {
+    let width = workspace_box.width();
+    let compact = layout_mode_for_width(width) == LayoutMode::Compact;
+    let preview_visible = preview_panel.is_visible();
+    set_hexpand_if_needed(content_stack, compact || !preview_visible);
+
+    if compact || !preview_visible || width <= 0 {
+        set_width_request_if_needed(content_stack, -1);
+        return;
+    }
+
+    let available = (width - workspace_box.spacing()).max(0);
+    let min_preview_width = 360;
+    let max_controls_width = (available - min_preview_width).max(320);
+    let controls_width = (available / 3).clamp(320, max_controls_width);
+    set_width_request_if_needed(content_stack, controls_width);
 }
 
 fn set_size_request_if_needed(widget: &impl IsA<gtk::Widget>, width: i32, height: i32) {

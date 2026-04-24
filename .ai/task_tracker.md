@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Refine Edit tab split and adjustments layout
+
+- Status: Done
+- Request: In the Edit tab, make the preview take roughly two-thirds of the width and the controls take one-third, enlarge the Quick Action buttons to fill their area, and split Adjustments into clearer crop and resize sections with ratio-only Guided Crop summary text.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `/memories/repo/awebpinator-gtk-notes.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `timeout 5s cargo run`
+- Notes: The Edit workspace now keeps the preview/control split aligned to a roughly 2:1 ratio in regular layout by driving the right-side width from the live workspace width while allowing compact layout to relax back to full expansion. Quick Actions now use an Edit-only fill treatment so the rotate/flip buttons occupy their full grid cells, Adjustments now separates Guided Crop from Resize, and the Guided Crop summary label reduces to the selected ratio once frame dimensions are known. No manual visual GTK inspection was performed in this pass.
+
 ### 2026-04-24 - Rework footer into active-tab contextual status bar
 
 - Status: Done
