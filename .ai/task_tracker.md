@@ -11,6 +11,24 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Make resize global and clamp preview scaling
+
+- Status: Done
+- Request: Make the resize workflow apply to all frames regardless of selection, refresh previews and size-dependent UI after resize, prevent previews from rendering above the frame/export dimensions, and set the window background to `#11161d`.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/thumbnail.rs`, `AGENTS.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`, `timeout 5s cargo run >/tmp/awebpinator-resize-preview-smoke.log 2>&1` with exit code `124`
+- Notes: Quick resize now applies to every frame in the timeline instead of only the active selection. Refresh work now requeues thumbnails for all frames and invalidates/rebuilds the selected preview and export preview so size-dependent UI stays in sync after resize. Preview render targets are clamped to the frame's effective dimensions, export preview targets are clamped to the configured export size, timeline tile aspect ratios now follow effective frame dimensions, and the preview metadata now shows source vs current dimensions. The window itself now gets an `app-window` CSS class so the top-level background uses `#11161d` instead of the default GTK gray.
+
+### 2026-04-24 - Add real custom resize workflow to Edit tab
+
+- Status: Done
+- Request: Expand the Edit resize preset control, make the `Custom` preset stay active, and add `Multiplier` and `Custom` resize tabs that keep aspect ratio and apply the chosen resize to the selected frames.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/types.rs`, `/memories/repo/awebpinator-gtk-notes.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`, `git diff --check`, `timeout 5s cargo run >/tmp/awebpinator-quick-resize-smoke.log 2>&1`
+- Notes: The Edit resize row now lets the preset combo expand across the available width and keeps a dedicated quick-resize state instead of deriving the combo directly from the applied transform on every redraw. Choosing `Custom` reveals `Multiplier` and `Custom` tabs: multiplier mode supports typed float values plus +/-1 stepping, while custom width/height inputs stay linked to the selected frame's aspect ratio. The bounded GTK startup run exited early with code `0` in this environment instead of timing out with `124`, so it was treated as inconclusive rather than a full smoke-test pass.
+
 ### 2026-04-24 - Refine Edit tab split and adjustments layout
 
 - Status: Done

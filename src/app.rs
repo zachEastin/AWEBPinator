@@ -91,6 +91,12 @@ pub enum AppMsg {
     SetCropAnchor(CropAnchor),
     ApplyQuickCrop,
     ClearQuickCrop,
+    SetQuickResizePreset(DimensionPreset),
+    SetQuickResizeMode(QuickResizeMode),
+    SetQuickResizeMultiplier(f64),
+    SetQuickResizeCustomWidth(u32),
+    SetQuickResizeCustomHeight(u32),
+    ApplyQuickResize,
     RotateSelection(i32),
     ToggleSelectionFlip {
         horizontal: bool,
@@ -283,6 +289,21 @@ impl DimensionPreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuickResizeMode {
+    Multiplier,
+    Custom,
+}
+
+impl QuickResizeMode {
+    fn stack_name(self) -> &'static str {
+        match self {
+            Self::Multiplier => "multiplier",
+            Self::Custom => "custom",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CropPreset {
     Square,
     Landscape16x9,
@@ -369,6 +390,11 @@ pub struct AppModel {
     loop_scope: LoopScope,
     crop_preset: CropPreset,
     crop_anchor: CropAnchor,
+    quick_resize_preset: DimensionPreset,
+    quick_resize_mode: QuickResizeMode,
+    quick_resize_multiplier: f64,
+    quick_resize_custom_width: u32,
+    quick_resize_custom_height: u32,
     cache_dir: PathBuf,
     last_output_path: Option<PathBuf>,
     command_preview: String,
@@ -433,6 +459,11 @@ pub struct AppWidgets {
     output_entry: gtk::Entry,
     suppress_output_entry_change: Rc<Cell<bool>>,
     quick_resize_combo: gtk::ComboBoxText,
+    quick_resize_custom_panel: gtk::Box,
+    quick_resize_mode_stack: gtk::Stack,
+    quick_resize_multiplier_spin: gtk::SpinButton,
+    quick_resize_custom_width_spin: gtk::SpinButton,
+    quick_resize_custom_height_spin: gtk::SpinButton,
     export_size_combo: gtk::ComboBoxText,
     loop_source_label: gtk::Label,
     loop_summary_label: gtk::Label,
@@ -545,6 +576,11 @@ impl Component for AppModel {
             loop_scope: LoopScope::Selected,
             crop_preset: CropPreset::Square,
             crop_anchor: CropAnchor::Center,
+            quick_resize_preset: DimensionPreset::Original,
+            quick_resize_mode: QuickResizeMode::Multiplier,
+            quick_resize_multiplier: 1.0,
+            quick_resize_custom_width: 0,
+            quick_resize_custom_height: 0,
             cache_dir,
             last_output_path: None,
             command_preview: String::new(),
@@ -588,6 +624,7 @@ impl Component for AppModel {
             }
         };
         model.recompute_command_preview();
+        model.sync_quick_resize_state_from_selection();
 
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -874,12 +911,8 @@ impl Component for AppModel {
             "video-x-generic-symbolic",
             "icon-tone-green",
         );
-        let crop_story_button = build_choice_button(
-            "Story",
-            "9:16",
-            "camera-photo-symbolic",
-            "icon-tone-coral",
-        );
+        let crop_story_button =
+            build_choice_button("Story", "9:16", "camera-photo-symbolic", "icon-tone-coral");
         for button in [
             &crop_square_button,
             &crop_widescreen_button,
@@ -929,22 +962,110 @@ impl Component for AppModel {
         let quick_resize_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
+            .hexpand(true)
             .build();
         let quick_resize_combo = combo_for_dimension_preset();
         set_accessible_label(&quick_resize_combo, "Quick resize preset");
-        let quick_apply_button = build_labeled_button(
-            "Apply",
-            "emblem-ok-symbolic",
-            "icon-tone-green",
-        );
+        quick_resize_combo.add_css_class("control-surface");
+        quick_resize_combo.set_hexpand(true);
+        quick_resize_combo.set_halign(gtk::Align::Fill);
+        let quick_apply_button =
+            build_labeled_button("Apply", "emblem-ok-symbolic", "icon-tone-green");
         quick_apply_button.add_css_class("suggested-action");
+        quick_apply_button.set_halign(gtk::Align::End);
         quick_resize_row.append(&quick_resize_combo);
         quick_resize_row.append(&quick_apply_button);
+        let quick_resize_custom_panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .visible(false)
+            .build();
+        let quick_resize_mode_stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::SlideLeftRight)
+            .hexpand(true)
+            .build();
+        let quick_resize_mode_switcher = gtk::StackSwitcher::new();
+        quick_resize_mode_switcher.set_stack(Some(&quick_resize_mode_stack));
+        quick_resize_mode_switcher.set_halign(gtk::Align::Start);
+        quick_resize_custom_panel.append(&quick_resize_mode_switcher);
+
+        let multiplier_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        let multiplier_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .build();
+        let multiplier_down_button =
+            build_icon_button("list-remove-symbolic", "Decrease resize multiplier by 1");
+        let quick_resize_multiplier_spin = gtk::SpinButton::with_range(0.1, 64.0, 1.0);
+        quick_resize_multiplier_spin.set_digits(2);
+        quick_resize_multiplier_spin.set_hexpand(true);
+        quick_resize_multiplier_spin.set_halign(gtk::Align::Fill);
+        quick_resize_multiplier_spin.add_css_class("control-surface");
+        set_accessible_label(&quick_resize_multiplier_spin, "Resize multiplier");
+        let multiplier_up_button =
+            build_icon_button("list-add-symbolic", "Increase resize multiplier by 1");
+        multiplier_row.append(&multiplier_down_button);
+        multiplier_row.append(&quick_resize_multiplier_spin);
+        multiplier_row.append(&multiplier_up_button);
+        multiplier_page.append(&helper_label(
+            "Scale the selected frame by a typed multiplier, or step it up and down in whole numbers.",
+        ));
+        multiplier_page.append(&multiplier_row);
+        quick_resize_mode_stack.add_titled(
+            &multiplier_page,
+            Some(QuickResizeMode::Multiplier.stack_name()),
+            "Multiplier",
+        );
+
+        let custom_page = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        let custom_grid = gtk::Grid::builder()
+            .column_spacing(8)
+            .row_spacing(8)
+            .build();
+        let quick_resize_custom_width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
+        quick_resize_custom_width_spin.set_hexpand(true);
+        quick_resize_custom_width_spin.set_halign(gtk::Align::Fill);
+        quick_resize_custom_width_spin.add_css_class("control-surface");
+        set_accessible_label(&quick_resize_custom_width_spin, "Quick resize custom width");
+        let quick_resize_custom_height_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
+        quick_resize_custom_height_spin.set_hexpand(true);
+        quick_resize_custom_height_spin.set_halign(gtk::Align::Fill);
+        quick_resize_custom_height_spin.add_css_class("control-surface");
+        set_accessible_label(
+            &quick_resize_custom_height_spin,
+            "Quick resize custom height",
+        );
+        attach_labeled_spin(&custom_grid, "Width", &quick_resize_custom_width_spin, 0, 0);
+        attach_labeled_spin(
+            &custom_grid,
+            "Height",
+            &quick_resize_custom_height_spin,
+            1,
+            0,
+        );
+        custom_page.append(&helper_label(
+            "Enter either width or height and the other value updates to keep the selected frame's aspect ratio.",
+        ));
+        custom_page.append(&custom_grid);
+        quick_resize_mode_stack.add_titled(
+            &custom_page,
+            Some(QuickResizeMode::Custom.stack_name()),
+            "Custom",
+        );
+
+        quick_resize_custom_panel.append(&quick_resize_mode_stack);
         let quick_resize_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
             .build();
         quick_resize_box.append(&quick_resize_row);
+        quick_resize_box.append(&quick_resize_custom_panel);
         edit_page.append(&section("Guided Crop", &crop_controls_box));
         edit_page.append(&section("Resize", &quick_resize_box));
 
@@ -1903,31 +2024,62 @@ impl Component for AppModel {
         quick_resize_combo.connect_changed(clone!(
             #[strong]
             sender,
-            #[strong]
-            resize_w,
-            #[strong]
-            resize_h,
-            #[strong]
-            inspector_fit_combo,
             move |combo| {
-                match dimension_preset_from_combo(combo) {
-                    DimensionPreset::Original => {
-                        set_spin_if_needed(&resize_w, 0.0);
-                        set_spin_if_needed(&resize_h, 0.0);
-                    }
-                    DimensionPreset::Hd1080 => {
-                        set_spin_if_needed(&resize_w, 1920.0);
-                        set_spin_if_needed(&resize_h, 1080.0);
-                        sync_combo_active_fit_mode(&inspector_fit_combo, FitMode::Contain);
-                    }
-                    DimensionPreset::Hd720 => {
-                        set_spin_if_needed(&resize_w, 1280.0);
-                        set_spin_if_needed(&resize_h, 720.0);
-                        sync_combo_active_fit_mode(&inspector_fit_combo, FitMode::Contain);
-                    }
-                    DimensionPreset::Custom => sender.input(AppMsg::SetAdvancedMode(true)),
-                }
+                sender.input(AppMsg::SetQuickResizePreset(dimension_preset_from_combo(
+                    combo,
+                )));
             }
+        ));
+        quick_resize_mode_stack.connect_notify_local(
+            Some("visible-child-name"),
+            clone!(
+                #[strong]
+                sender,
+                move |stack, _| {
+                    let mode = match stack.visible_child_name().as_deref() {
+                        Some("custom") => QuickResizeMode::Custom,
+                        _ => QuickResizeMode::Multiplier,
+                    };
+                    sender.input(AppMsg::SetQuickResizeMode(mode));
+                }
+            ),
+        );
+        multiplier_down_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            quick_resize_multiplier_spin,
+            move |_| {
+                sender.input(AppMsg::SetQuickResizeMultiplier(
+                    quick_resize_multiplier_spin.value() - 1.0,
+                ));
+            }
+        ));
+        quick_resize_multiplier_spin.connect_value_changed(clone!(
+            #[strong]
+            sender,
+            move |spin| sender.input(AppMsg::SetQuickResizeMultiplier(spin.value()))
+        ));
+        multiplier_up_button.connect_clicked(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            quick_resize_multiplier_spin,
+            move |_| {
+                sender.input(AppMsg::SetQuickResizeMultiplier(
+                    quick_resize_multiplier_spin.value() + 1.0,
+                ));
+            }
+        ));
+        quick_resize_custom_width_spin.connect_value_changed(clone!(
+            #[strong]
+            sender,
+            move |spin| sender.input(AppMsg::SetQuickResizeCustomWidth(spin.value() as u32))
+        ));
+        quick_resize_custom_height_spin.connect_value_changed(clone!(
+            #[strong]
+            sender,
+            move |spin| sender.input(AppMsg::SetQuickResizeCustomHeight(spin.value() as u32))
         ));
         loop_duplicate_button.connect_clicked(clone!(
             #[strong]
@@ -2011,33 +2163,7 @@ impl Component for AppModel {
         quick_apply_button.connect_clicked(clone!(
             #[strong]
             sender,
-            #[strong]
-            flip_h_check,
-            #[strong]
-            flip_v_check,
-            #[strong]
-            crop_x,
-            #[strong]
-            crop_y,
-            #[strong]
-            crop_w,
-            #[strong]
-            crop_h,
-            #[strong]
-            resize_w,
-            #[strong]
-            resize_h,
-            #[strong]
-            inspector_fit_combo,
-            move |_| {
-                sender.input(AppMsg::ApplyInspectorTransform(InspectorValues {
-                    flip_horizontal: flip_h_check.is_active(),
-                    flip_vertical: flip_v_check.is_active(),
-                    crop: crop_from_widgets(&crop_x, &crop_y, &crop_w, &crop_h),
-                    resize: resize_from_widgets(&resize_w, &resize_h),
-                    fit_mode: fit_mode_from_combo(&inspector_fit_combo),
-                }));
-            }
+            move |_| sender.input(AppMsg::ApplyQuickResize)
         ));
         apply_transform_button.connect_clicked(clone!(
             #[strong]
@@ -2277,6 +2403,11 @@ impl Component for AppModel {
             output_entry,
             suppress_output_entry_change,
             quick_resize_combo,
+            quick_resize_custom_panel,
+            quick_resize_mode_stack,
+            quick_resize_multiplier_spin,
+            quick_resize_custom_width_spin,
+            quick_resize_custom_height_spin,
             export_size_combo,
             loop_source_label,
             loop_summary_label,
@@ -2379,12 +2510,12 @@ impl Component for AppModel {
             AppMsg::PreviewLayoutChanged { tab, size } => {
                 if tab == self.active_tab && size != self.preview_target_size {
                     self.preview_target_size = size;
-                    if self.primary_selected_id().is_some()
-                        && should_refresh_preview(
+                    if self.primary_selected_frame().is_some_and(|frame| {
+                        should_refresh_preview(
                             self.preview_rendered_size,
-                            self.preview_target_size,
+                            self.preview_render_size_for_frame(frame),
                         )
-                    {
+                    }) {
                         self.queue_preview_for_primary_selection(&sender);
                     }
                 }
@@ -2430,6 +2561,7 @@ impl Component for AppModel {
                 );
                 self.selection = next.selection;
                 self.selection_anchor_id = next.anchor_id;
+                self.sync_quick_resize_state_from_selection();
                 self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::ToggleEnabled(id, enabled) => {
@@ -2472,6 +2604,7 @@ impl Component for AppModel {
                 let inserted = self.timeline.duplicate_selected(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Duplicated {} frame(s).", inserted.len()),
@@ -2499,6 +2632,7 @@ impl Component for AppModel {
                     .paste_after_selection(&self.selection, &self.clipboard);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Pasted {} frame(s).", inserted.len()),
@@ -2515,6 +2649,7 @@ impl Component for AppModel {
                 self.preview_path = None;
                 self.preview_frame_id = None;
                 self.invalidate_export_preview();
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Removed {removed} frame(s)."),
@@ -2525,6 +2660,7 @@ impl Component for AppModel {
                 let inserted = self.timeline.append_duplicate_loop(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Appended duplicate loop with {} frame(s).", inserted.len()),
@@ -2539,6 +2675,7 @@ impl Component for AppModel {
                     .append_reverse_loop(&self.selection, repeat_edges);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Appended reverse loop with {} frame(s).", inserted.len()),
@@ -2574,6 +2711,7 @@ impl Component for AppModel {
                         let inserted = self.timeline.append_copies(&source, self.loop_repeats);
                         self.selection = inserted.iter().copied().collect();
                         self.selection_anchor_id = inserted.first().copied();
+                        self.sync_quick_resize_state_from_selection();
                         self.set_status(
                             FooterStatusScope::Loop,
                             format!(
@@ -2599,10 +2737,72 @@ impl Component for AppModel {
             AppMsg::ClearQuickCrop => {
                 self.clear_quick_crop(&sender);
             }
+            AppMsg::SetQuickResizePreset(preset) => {
+                self.quick_resize_preset = preset;
+                if preset == DimensionPreset::Custom {
+                    if self.quick_resize_custom_width == 0 || self.quick_resize_custom_height == 0 {
+                        self.seed_quick_resize_custom_dimensions();
+                    }
+                }
+            }
+            AppMsg::SetQuickResizeMode(mode) => {
+                self.quick_resize_mode = mode;
+            }
+            AppMsg::SetQuickResizeMultiplier(value) => {
+                self.quick_resize_multiplier = value.clamp(0.1, 64.0);
+            }
+            AppMsg::SetQuickResizeCustomWidth(width) => {
+                let height = self
+                    .linked_resize_height_for_width(width)
+                    .unwrap_or(self.quick_resize_custom_height);
+                self.quick_resize_custom_width = width;
+                self.quick_resize_custom_height = height;
+            }
+            AppMsg::SetQuickResizeCustomHeight(height) => {
+                let width = self
+                    .linked_resize_width_for_height(height)
+                    .unwrap_or(self.quick_resize_custom_width);
+                self.quick_resize_custom_height = height;
+                self.quick_resize_custom_width = width;
+            }
+            AppMsg::ApplyQuickResize => {
+                if self.timeline.is_empty() {
+                    self.set_status(FooterStatusScope::Edit, "Import frames before resizing.");
+                } else if let Some(target) = self.quick_resize_target() {
+                    self.apply_to_all_frames(|frame| {
+                        frame.transform_spec.resize = Some(target);
+                    });
+                    self.sync_quick_resize_state_from_selection();
+                    self.set_status(
+                        FooterStatusScope::Edit,
+                        format!(
+                            "Applied resize target {} x {} to all frames.",
+                            target.width, target.height
+                        ),
+                    );
+                    self.refresh_all_frame_jobs(&sender);
+                } else if self.quick_resize_preset == DimensionPreset::Original {
+                    self.apply_to_all_frames(|frame| {
+                        frame.transform_spec.resize = None;
+                    });
+                    self.sync_quick_resize_state_from_selection();
+                    self.set_status(
+                        FooterStatusScope::Edit,
+                        "Reset all frames to their original size.",
+                    );
+                    self.refresh_all_frame_jobs(&sender);
+                } else {
+                    self.set_status(
+                        FooterStatusScope::Edit,
+                        "Enter a valid multiplier or linked custom size before resizing all frames.",
+                    );
+                }
+            }
             AppMsg::RotateSelection(delta) => {
                 self.apply_to_selection(|frame| {
                     frame.transform_spec.rotate_quarter_turns += delta;
                 });
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Edit,
                     "Updated rotation for selected frames.",
@@ -2618,6 +2818,7 @@ impl Component for AppModel {
                         frame.transform_spec.flip_vertical = !frame.transform_spec.flip_vertical;
                     }
                 });
+                self.sync_quick_resize_state_from_selection();
                 let status = if horizontal {
                     "Updated horizontal flip for selected frames.".to_string()
                 } else {
@@ -2634,6 +2835,7 @@ impl Component for AppModel {
                     frame.transform_spec.resize = values.resize;
                     frame.transform_spec.fit_mode = values.fit_mode;
                 });
+                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Edit,
                     "Applied edit values to selected frames.",
@@ -2914,10 +3116,12 @@ impl Component for AppModel {
                     if let Some(preview_path) = usable_preview_path(preview_path) {
                         self.preview_rendered_size = Some(render_size);
                         self.preview_path = Some(preview_path);
-                        if should_refresh_preview(
-                            self.preview_rendered_size,
-                            self.preview_target_size,
-                        ) {
+                        if self.primary_selected_frame().is_some_and(|frame| {
+                            should_refresh_preview(
+                                self.preview_rendered_size,
+                                self.preview_render_size_for_frame(frame),
+                            )
+                        }) {
                             self.queue_preview_for_primary_selection(&sender);
                         }
                     }
@@ -3152,7 +3356,12 @@ impl Component for AppModel {
             &mut widgets.loop_preview_picture_path,
         );
         let export_preview_path = self.export_preview_path.as_ref().filter(|_| {
-            !should_refresh_preview(self.export_preview_rendered_size, self.preview_target_size)
+            self.primary_selected_frame().is_some_and(|frame| {
+                !should_refresh_preview(
+                    self.export_preview_rendered_size,
+                    self.export_preview_render_size_for_frame(frame),
+                )
+            })
         });
         set_picture_from_path_if_needed(
             &widgets.export_preview_picture,
@@ -3255,9 +3464,26 @@ impl Component for AppModel {
             self.export_profile.encoder_preset,
         );
         sync_combo_active_fit_mode(&widgets.fit_mode_combo, self.export_profile.fit_mode);
-        sync_combo_active_dimension_preset(
-            &widgets.quick_resize_combo,
-            self.selection_dimension_preset(),
+        sync_combo_active_dimension_preset(&widgets.quick_resize_combo, self.quick_resize_preset);
+        set_visible_if_needed(
+            &widgets.quick_resize_custom_panel,
+            self.quick_resize_preset == DimensionPreset::Custom,
+        );
+        set_stack_visible_child_name_if_needed(
+            &widgets.quick_resize_mode_stack,
+            self.quick_resize_mode.stack_name(),
+        );
+        set_spin_if_needed(
+            &widgets.quick_resize_multiplier_spin,
+            self.quick_resize_multiplier,
+        );
+        set_spin_if_needed(
+            &widgets.quick_resize_custom_width_spin,
+            self.quick_resize_custom_width as f64,
+        );
+        set_spin_if_needed(
+            &widgets.quick_resize_custom_height_spin,
+            self.quick_resize_custom_height as f64,
         );
         sync_combo_active_dimension_preset(
             &widgets.export_size_combo,
@@ -3430,7 +3656,7 @@ impl AppModel {
 
     fn edit_footer_summary_text(&self) -> String {
         if self.selection.is_empty() {
-            return "Select a frame to rotate, flip, crop, or resize.".to_string();
+            return "Select a frame to inspect it. Quick resize applies to all frames.".to_string();
         }
         if self.selection.len() > 1 {
             return format!(
@@ -3574,6 +3800,7 @@ impl AppModel {
         };
         self.selection = imported_ids.iter().copied().collect();
         self.selection_anchor_id = imported_ids.first().copied();
+        self.sync_quick_resize_state_from_selection();
         self.set_status(
             FooterStatusScope::Organize,
             format!(
@@ -3631,6 +3858,7 @@ impl AppModel {
         self.selection.clear();
         self.selection.insert(frame_id);
         self.selection_anchor_id = Some(frame_id);
+        self.sync_quick_resize_state_from_selection();
         self.queue_preview_for_primary_selection(sender);
     }
 
@@ -3738,6 +3966,7 @@ impl AppModel {
         self.preview_frame_id = None;
         self.preview_rendered_size = None;
         self.invalidate_export_preview();
+        self.sync_quick_resize_state_from_selection();
         ids
     }
 
@@ -3784,6 +4013,13 @@ impl AppModel {
         self.queue_preview_for_primary_selection(sender);
     }
 
+    fn refresh_all_frame_jobs(&mut self, sender: &ComponentSender<Self>) {
+        let ids = self.timeline_frame_ids();
+        self.refresh_frame_jobs(ids, sender);
+        self.preview_rendered_size = None;
+        self.queue_preview_for_primary_selection(sender);
+    }
+
     fn queue_preview_for_primary_selection(&mut self, sender: &ComponentSender<Self>) {
         let Some(frame) = self.primary_selected_frame().cloned() else {
             self.preview_frame_id = None;
@@ -3794,7 +4030,7 @@ impl AppModel {
         };
         self.invalidate_export_preview();
         let same_frame = self.preview_frame_id == Some(frame.id);
-        let render_size = self.preview_target_size;
+        let render_size = self.preview_render_size_for_frame(&frame);
         let cached_preview_path = preview_cache_path(&frame, &self.cache_dir, render_size);
         let cached_preview_path = cached_preview_path.is_file().then_some(cached_preview_path);
         self.preview_frame_id = Some(frame.id);
@@ -3842,7 +4078,7 @@ impl AppModel {
         };
 
         let generation = self.export_preview_generation;
-        let render_size = self.preview_target_size;
+        let render_size = self.export_preview_render_size_for_frame(&frame);
         let export_size = self.export_preview_target();
         let export_fit_mode = self.export_profile.fit_mode;
         let cached_preview_path = export_preview_cache_path(
@@ -3895,7 +4131,6 @@ impl AppModel {
             return;
         };
 
-        let render_size = self.preview_target_size;
         for frame in self
             .timeline
             .frames()
@@ -3905,6 +4140,10 @@ impl AppModel {
         {
             let frame = frame.clone();
             let cache_dir = self.cache_dir.clone();
+            let render_size = preview_render_size_for_dimensions(
+                frame_effective_dimensions(&frame),
+                self.preview_target_size,
+            );
             if preview_cache_path(&frame, &cache_dir, render_size).is_file() {
                 continue;
             }
@@ -3920,6 +4159,12 @@ impl AppModel {
             if self.selection.contains(&frame.id) {
                 apply(frame);
             }
+        }
+    }
+
+    fn apply_to_all_frames(&mut self, mut apply: impl FnMut(&mut FrameItem)) {
+        for frame in self.timeline.frames_mut() {
+            apply(frame);
         }
     }
 
@@ -3970,6 +4215,7 @@ impl AppModel {
                 skipped
             )
         };
+        self.sync_quick_resize_state_from_selection();
         self.set_status(FooterStatusScope::Edit, status);
         self.refresh_selection_jobs(sender);
     }
@@ -3998,6 +4244,7 @@ impl AppModel {
             return;
         }
 
+        self.sync_quick_resize_state_from_selection();
         self.set_status(
             FooterStatusScope::Edit,
             format!("Cleared crop from {} frame(s).", cleared),
@@ -4037,7 +4284,7 @@ impl AppModel {
                 self.timeline
                     .frames()
                     .iter()
-                    .find_map(|frame| frame.source_dimensions)
+                    .find_map(frame_effective_dimensions)
                     .map(|(width, height)| format!("{width} x {height}"))
             })
             .unwrap_or_else(|| "Original size".to_string())
@@ -4149,6 +4396,21 @@ impl AppModel {
             frame.thumbnail_path.hash(&mut hasher);
             frame.enabled.hash(&mut hasher);
             frame.duration_ms.hash(&mut hasher);
+            frame_effective_dimensions(frame).hash(&mut hasher);
+            frame.transform_spec.rotate_quarter_turns.hash(&mut hasher);
+            frame.transform_spec.flip_horizontal.hash(&mut hasher);
+            frame.transform_spec.flip_vertical.hash(&mut hasher);
+            frame
+                .transform_spec
+                .crop
+                .map(|crop| (crop.x, crop.y, crop.width, crop.height))
+                .hash(&mut hasher);
+            frame
+                .transform_spec
+                .resize
+                .map(|resize| (resize.width, resize.height))
+                .hash(&mut hasher);
+            frame.transform_spec.fit_mode.as_str().hash(&mut hasher);
             frame
                 .thumbnail_path
                 .as_deref()
@@ -4367,6 +4629,7 @@ impl AppModel {
     fn selection_dimension_preset(&self) -> DimensionPreset {
         match self
             .primary_selected_frame()
+            .or_else(|| self.timeline.frames().first())
             .and_then(|frame| frame.transform_spec.resize)
         {
             None => DimensionPreset::Original,
@@ -4379,6 +4642,69 @@ impl AppModel {
                 height: 720,
             }) => DimensionPreset::Hd720,
             Some(_) => DimensionPreset::Custom,
+        }
+    }
+
+    fn sync_quick_resize_state_from_selection(&mut self) {
+        self.quick_resize_preset = self.selection_dimension_preset();
+        self.quick_resize_multiplier = 1.0;
+        self.seed_quick_resize_custom_dimensions();
+    }
+
+    fn seed_quick_resize_custom_dimensions(&mut self) {
+        let (width, height) = self.quick_resize_reference_dimensions().unwrap_or((0, 0));
+        self.quick_resize_custom_width = width;
+        self.quick_resize_custom_height = height;
+    }
+
+    fn quick_resize_reference_dimensions(&self) -> Option<(u32, u32)> {
+        self.primary_selected_frame()
+            .or_else(|| self.timeline.frames().first())
+            .and_then(frame_effective_dimensions)
+    }
+
+    fn linked_resize_height_for_width(&self, width: u32) -> Option<u32> {
+        if width == 0 {
+            return Some(0);
+        }
+        let (base_width, base_height) = self.quick_resize_reference_dimensions()?;
+        scale_dimension_by_ratio(width, base_height, base_width)
+    }
+
+    fn linked_resize_width_for_height(&self, height: u32) -> Option<u32> {
+        if height == 0 {
+            return Some(0);
+        }
+        let (base_width, base_height) = self.quick_resize_reference_dimensions()?;
+        scale_dimension_by_ratio(height, base_width, base_height)
+    }
+
+    fn quick_resize_target(&self) -> Option<ResizeTarget> {
+        match self.quick_resize_preset {
+            DimensionPreset::Original => None,
+            DimensionPreset::Hd1080 => Some(ResizeTarget {
+                width: 1920,
+                height: 1080,
+            }),
+            DimensionPreset::Hd720 => Some(ResizeTarget {
+                width: 1280,
+                height: 720,
+            }),
+            DimensionPreset::Custom => match self.quick_resize_mode {
+                QuickResizeMode::Multiplier => {
+                    let (base_width, base_height) = self.quick_resize_reference_dimensions()?;
+                    let multiplier = self.quick_resize_multiplier.max(0.1);
+                    Some(ResizeTarget {
+                        width: scaled_resize_dimension(base_width, multiplier),
+                        height: scaled_resize_dimension(base_height, multiplier),
+                    })
+                }
+                QuickResizeMode::Custom => {
+                    let width = self.quick_resize_custom_width;
+                    let height = self.quick_resize_custom_height;
+                    (width > 0 && height > 0).then_some(ResizeTarget { width, height })
+                }
+            },
         }
     }
 
@@ -4399,22 +4725,20 @@ impl AppModel {
         let Some(frame) = self.primary_selected_frame() else {
             return "Select a frame to inspect it.".to_string();
         };
-        let dims = frame
+        let source_dims = frame
             .source_dimensions
             .map(|(w, h)| format!("{w} x {h}"))
             .unwrap_or_else(|| "unknown".to_string());
+        let effective_dims = frame_effective_dimensions(frame)
+            .map(|(w, h)| format!("{w} x {h}"))
+            .unwrap_or_else(|| source_dims.clone());
+        let dims = if effective_dims == source_dims {
+            source_dims.clone()
+        } else {
+            format!("{source_dims} -> {effective_dims}")
+        };
         if !self.advanced_mode {
-            return format!(
-                "{}\n{} • {} ms{}",
-                frame.file_name(),
-                dims,
-                frame.duration_ms,
-                if frame.transform_spec.resize.is_some() {
-                    " • resized"
-                } else {
-                    ""
-                }
-            );
+            return format!("{}\n{} • {} ms", frame.file_name(), dims, frame.duration_ms,);
         }
         let crop = frame
             .transform_spec
@@ -4427,9 +4751,10 @@ impl AppModel {
             .map(|resize| format!("resize {}x{}", resize.width, resize.height))
             .unwrap_or_else(|| "no resize".to_string());
         format!(
-            "{}\n{} | {} ms | rotate {} quarter-turns\n{} | {} | fit {} | flip h:{} v:{}",
+            "{}\n{} | current {} | {} ms | rotate {} quarter-turns\n{} | {} | fit {} | flip h:{} v:{}",
             frame.file_name(),
-            dims,
+            source_dims,
+            effective_dims,
             frame.duration_ms,
             frame.transform_spec.rotate_quarter_turns.rem_euclid(4),
             crop,
@@ -4438,6 +4763,21 @@ impl AppModel {
             frame.transform_spec.flip_horizontal,
             frame.transform_spec.flip_vertical
         )
+    }
+
+    fn preview_render_size_for_frame(&self, frame: &FrameItem) -> PreviewRenderSize {
+        preview_render_size_for_dimensions(
+            frame_effective_dimensions(frame),
+            self.preview_target_size,
+        )
+    }
+
+    fn export_preview_render_size_for_frame(&self, frame: &FrameItem) -> PreviewRenderSize {
+        let export_dimensions = self
+            .export_preview_target()
+            .map(|target| (target.width, target.height))
+            .or_else(|| frame_effective_dimensions(frame));
+        preview_render_size_for_dimensions(export_dimensions, self.preview_target_size)
     }
 
     fn sync_inspector_widgets(&self, widgets: &mut AppWidgets) {
@@ -4625,6 +4965,8 @@ fn combo_for_fit_mode() -> gtk::ComboBoxText {
 
 fn combo_for_dimension_preset() -> gtk::ComboBoxText {
     let combo = gtk::ComboBoxText::new();
+    combo.set_hexpand(true);
+    combo.set_halign(gtk::Align::Fill);
     for preset in [
         DimensionPreset::Original,
         DimensionPreset::Hd1080,
@@ -4996,7 +5338,11 @@ fn timeline_tile_picture_size(frame: &FrameItem) -> (i32, i32) {
     const MAX_WIDTH: i32 = 156;
 
     let aspect_ratio = frame
-        .source_dimensions
+        .transform_spec
+        .resize
+        .map(|resize| (resize.width, resize.height))
+        .or_else(|| frame_effective_dimensions(frame))
+        .or(frame.source_dimensions)
         .filter(|(_, height)| *height > 0)
         .map(|(width, height)| width as f64 / height as f64)
         .unwrap_or(1.0);
@@ -5370,6 +5716,19 @@ fn preview_render_size_from_values(
     }
 }
 
+fn preview_render_size_for_dimensions(
+    dimensions: Option<(u32, u32)>,
+    requested_size: PreviewRenderSize,
+) -> PreviewRenderSize {
+    match dimensions {
+        Some((width, height)) => PreviewRenderSize {
+            width: requested_size.width.min(width.max(1)),
+            height: requested_size.height.min(height.max(1)),
+        },
+        None => requested_size,
+    }
+}
+
 fn install_app_css(window: &gtk::Window) {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(
@@ -5713,6 +6072,38 @@ fn resize_from_widgets(
         (width, height) if width > 0 && height > 0 => Some(ResizeTarget { width, height }),
         _ => None,
     }
+}
+
+fn frame_effective_dimensions(frame: &FrameItem) -> Option<(u32, u32)> {
+    let rotated = rotated_dimensions(
+        frame.source_dimensions?,
+        frame.transform_spec.rotate_quarter_turns,
+    );
+    let cropped = frame
+        .transform_spec
+        .crop
+        .map(|crop| (crop.width, crop.height))
+        .unwrap_or(rotated);
+    Some(
+        frame
+            .transform_spec
+            .resize
+            .map(|resize| (resize.width, resize.height))
+            .unwrap_or(cropped),
+    )
+}
+
+fn scale_dimension_by_ratio(value: u32, numerator: u32, denominator: u32) -> Option<u32> {
+    if value == 0 || numerator == 0 || denominator == 0 {
+        return None;
+    }
+    let scaled = ((u128::from(value) * u128::from(numerator)) + (u128::from(denominator) / 2))
+        / u128::from(denominator);
+    Some(scaled.clamp(1, 8192) as u32)
+}
+
+fn scaled_resize_dimension(base: u32, multiplier: f64) -> u32 {
+    ((f64::from(base.max(1)) * multiplier).round() as u32).clamp(1, 8192)
 }
 
 fn crop_rect_for_frame(
@@ -6248,10 +6639,12 @@ mod tests {
 
     use super::{
         CropAnchor, CropPreset, PreviewRenderSize, crop_rect_for_frame, following_frame_id,
-        immediate_preview_path, playback_start_frame_id, preview_render_size_from_values,
-        preview_result_is_usable, should_refresh_preview, step_frame_id, usable_preview_path,
+        frame_effective_dimensions, immediate_preview_path, playback_start_frame_id,
+        preview_render_size_for_dimensions, preview_render_size_from_values,
+        preview_result_is_usable, scale_dimension_by_ratio, scaled_resize_dimension,
+        should_refresh_preview, step_frame_id, timeline_tile_picture_size, usable_preview_path,
     };
-    use crate::types::{CropRect, FitMode, FrameItem, TransformSpec};
+    use crate::types::{CropRect, FitMode, FrameItem, ResizeTarget, TransformSpec};
 
     #[test]
     fn step_frame_navigation_clamps_to_timeline_bounds() {
@@ -6590,5 +6983,81 @@ mod tests {
                 height: 1000,
             })
         );
+    }
+
+    #[test]
+    fn frame_effective_dimensions_follow_rotation_crop_and_resize() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec {
+                rotate_quarter_turns: 1,
+                flip_horizontal: false,
+                flip_vertical: false,
+                crop: Some(CropRect {
+                    x: 10,
+                    y: 20,
+                    width: 900,
+                    height: 600,
+                }),
+                resize: Some(ResizeTarget {
+                    width: 450,
+                    height: 300,
+                }),
+                fit_mode: FitMode::Contain,
+            },
+            thumbnail_path: None,
+            enabled: true,
+            source_dimensions: Some((1920, 1080)),
+        };
+
+        assert_eq!(frame_effective_dimensions(&frame), Some((450, 300)));
+    }
+
+    #[test]
+    fn resize_scaling_helpers_preserve_aspect_ratio() {
+        assert_eq!(scale_dimension_by_ratio(400, 9, 16), Some(225));
+        assert_eq!(scaled_resize_dimension(960, 1.5), 1440);
+    }
+
+    #[test]
+    fn preview_render_size_clamps_to_frame_dimensions() {
+        assert_eq!(
+            preview_render_size_for_dimensions(
+                Some((640, 360)),
+                PreviewRenderSize {
+                    width: 1280,
+                    height: 720,
+                },
+            ),
+            PreviewRenderSize {
+                width: 640,
+                height: 360,
+            }
+        );
+    }
+
+    #[test]
+    fn timeline_tile_picture_size_uses_effective_dimensions() {
+        let frame = FrameItem {
+            id: 1,
+            source_path: PathBuf::from("source.png"),
+            duration_ms: 100,
+            transform_spec: TransformSpec {
+                resize: Some(ResizeTarget {
+                    width: 300,
+                    height: 600,
+                }),
+                ..TransformSpec::default()
+            },
+            thumbnail_path: None,
+            enabled: true,
+            source_dimensions: Some((1920, 1080)),
+        };
+
+        let (width, height) = timeline_tile_picture_size(&frame);
+        assert_eq!(height, 78);
+        assert!(width < 78);
     }
 }
