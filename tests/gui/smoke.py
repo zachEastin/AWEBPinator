@@ -39,7 +39,7 @@ REQUIRED_ACCESSIBLE_LABELS = {
     "Save Project",
     "Organize workflow tab",
     "Edit workflow tab",
-    "Loop workflow tab",
+    "Timeline workflow tab",
     "Export workflow tab",
     "Secondary actions",
     "Diagnostics",

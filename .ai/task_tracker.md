@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Reframe Loop tab as Timeline workspace
+
+- Status: Done
+- Request: Turn the current Loop tab into a timeline-focused workspace by moving the timeline action and clipboard/order controls out of Edit, keeping loop creation under a Loop section, and renaming the visible tab to better reflect frame order/duration automation work.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `tests/gui/smoke.py`, `README.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `tests/gui/smoke.py`, `README.md`
+- Verification: `cargo fmt`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `python3 tests/gui/smoke.py`, `git diff --check`, `timeout 5s cargo run`
+- Notes: Edit now keeps only frame/pixel-oriented adjustments, while the visible Timeline tab gathers timeline actions, clipboard/order controls, and a Loop section with the existing loop builder settings. The internal `WorkflowTab::Loop` state was left unchanged to keep the patch scoped. In this environment, `timeout 5s cargo run` exited immediately with code `0` after launching `target/debug/awebpinator`, so it was not treated as a timeout-smoke pass; the AT-SPI smoke test passed and confirmed the renamed Timeline tab instead.
+
 ### 2026-04-24 - Fix startup abort in timeline UI changes
 
 - Status: Done
