@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+bin_name="@BIN_NAME@"
+app_name="@APP_NAME@"
+profile="@PROFILE@"
+
+source_bin="$script_dir/$bin_name"
+source_desktop="$script_dir/$bin_name.desktop"
+source_icon="$script_dir/icon.png"
+
+install_bin_dir="${HOME}/.local/bin"
+install_app_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+install_icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/512x512/apps"
+installed_bin="$install_bin_dir/$bin_name"
+installed_desktop="$install_app_dir/$bin_name.desktop"
+installed_icon="$install_icon_dir/$bin_name.png"
+
+if [[ ! -x "$source_bin" ]]; then
+    echo "Expected built binary at: $source_bin" >&2
+    echo "Run @BUILD_COMMAND@ first." >&2
+    exit 1
+fi
+
+if [[ ! -f "$source_desktop" ]]; then
+    echo "Expected desktop launcher at: $source_desktop" >&2
+    exit 1
+fi
+
+if [[ ! -f "$source_icon" ]]; then
+    echo "Expected icon at: $source_icon" >&2
+    exit 1
+fi
+
+install -d "$install_bin_dir" "$install_app_dir" "$install_icon_dir"
+install -Dm755 "$source_bin" "$installed_bin"
+install -Dm644 "$source_icon" "$installed_icon"
+sed "s|__AWEBPINATOR_EXEC__|$installed_bin|g" "$source_desktop" > "$installed_desktop"
+chmod 0644 "$installed_desktop"
+
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "$install_app_dir" >/dev/null 2>&1 || true
+fi
+
+icon_theme_root="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor"
+if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q "$icon_theme_root" >/dev/null 2>&1 || true
+fi
+
+echo "$app_name installed for the current user."
+echo "Binary: $installed_bin"
+echo "Launcher: $installed_desktop"
+echo "Icon: $installed_icon"

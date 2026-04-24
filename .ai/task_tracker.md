@@ -11,6 +11,33 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Install packaging icon into Fedora desktop integration
+
+- Status: Done
+- Request: Use `packaging/icon.png` as the app icon shown by Fedora UI and include it in the generated install/update flow.
+- Files inspected: `.ai/task_tracker.md`, `build.rs`, `packaging/linux/awebpinator.desktop.in`, `packaging/linux/install-awebpinator.sh.in`, `packaging/icon.png`, `README.md`
+- Files changed: `.ai/task_tracker.md`, `build.rs`, `packaging/linux/awebpinator.desktop.in`, `packaging/linux/install-awebpinator.sh.in`, `README.md`, `AGENTS.md`
+- Verification: `cargo build --release`, `cargo test`, `bash -n target/release/install-awebpinator.sh`, `git diff --check`
+- Notes: The release build now copies `packaging/icon.png` to `target/<profile>/icon.png`. The generated desktop launcher now sets `Icon=awebpinator`, and the generated installer copies the icon into `~/.local/share/icons/hicolor/512x512/apps/awebpinator.png` and refreshes the icon cache when `gtk-update-icon-cache` is available.
+
+### 2026-04-24 - Generate desktop launcher and local install artifact on release build
+
+- Status: Done
+- Request: Make `cargo build --release` produce a `.desktop` launcher and a file the user can run to install or update the app like a normal Fedora desktop application.
+- Files inspected: `AGENTS.md`, `.ai/agent.md`, `.ai/task_tracker.md`, `README.md`, `Cargo.toml`
+- Files changed: `.ai/task_tracker.md`, `build.rs`, `packaging/linux/awebpinator.desktop.in`, `packaging/linux/install-awebpinator.sh.in`, `README.md`, `AGENTS.md`
+- Verification: `cargo build --release`, `cargo test`, `bash -n target/release/install-awebpinator.sh`, `git diff --check`
+- Notes: Added a build script that generates `target/<profile>/awebpinator.desktop` and `target/<profile>/install-awebpinator.sh` on every Cargo build. The generated installer copies the built binary into `~/.local/bin`, installs a resolved desktop launcher into `~/.local/share/applications`, and refreshes the local desktop database when available. The install/update step remains explicit and idempotent instead of running as a side effect of compilation.
+
+### 2026-04-24 - Clarify Fedora local app installation in README
+
+- Status: Done
+- Request: Update `README.md` to explicitly explain how to build AWEBPinator and install it for normal Fedora desktop use instead of only running it from Cargo.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `README.md`, `Cargo.toml`
+- Files changed: `.ai/task_tracker.md`, `README.md`
+- Verification: `git diff -- README.md .ai/task_tracker.md`, manual README review
+- Notes: Added a Fedora-specific local-install section that documents the current supported path: build the release binary, install it into `~/.local/bin`, create a user-local desktop launcher under `~/.local/share/applications`, refresh the desktop database if needed, and note update/removal behavior. The README also now states explicitly that the repo does not yet ship an RPM, Flatpak manifest, desktop file, or icon asset.
+
 ### 2026-04-24 - Copy custom resize dimensions into Export custom size
 
 - Status: Done

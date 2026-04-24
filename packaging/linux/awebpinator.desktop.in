@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=@APP_NAME@
+Comment=Assemble still images into animated WebP files
+Exec=__AWEBPINATOR_EXEC__
+Icon=@BIN_NAME@
+Terminal=false
+Categories=Graphics;Utility;
+Keywords=webp;animation;images;ffmpeg;
+StartupNotify=true

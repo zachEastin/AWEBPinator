@@ -39,6 +39,43 @@ For an optimized build:
 cargo build --release
 ```
 
+## Install For Normal Fedora Desktop Use
+
+The repo currently builds a native Linux binary, but it does not yet ship a Fedora RPM, Flatpak manifest, or icon asset. It now generates desktop-install artifacts during a release build so you can install or update the app for your current user without writing the launcher by hand.
+
+After:
+
+```bash
+cargo build --release
+```
+
+you will have these release artifacts:
+
+- `target/release/awebpinator`: the optimized app binary
+- `target/release/awebpinator.desktop`: the desktop launcher definition
+- `target/release/icon.png`: the app icon copied from `packaging/icon.png`
+- `target/release/install-awebpinator.sh`: the generated installer/updater
+
+Run the installer:
+
+```bash
+./target/release/install-awebpinator.sh
+```
+
+That script installs or updates the current-user app in:
+
+- `~/.local/bin/awebpinator`
+- `~/.local/share/applications/awebpinator.desktop`
+- `~/.local/share/icons/hicolor/512x512/apps/awebpinator.png`
+
+Notes:
+
+- This installs only for the current user. It does not require root.
+- The installer is idempotent: rerunning it after a new `cargo build --release` updates the installed binary and launcher in place.
+- The `.desktop` file is the standard Linux launcher metadata used by GNOME/Fedora to show the app in the launcher and associate it with a normal desktop app entry. It includes the app name, comment, launch command, icon name, categories, keywords, and startup notification setting.
+- The launcher icon is sourced from `packaging/icon.png` and installed into the current user's `hicolor` icon theme as `awebpinator.png`.
+- To remove the app, delete `~/.local/bin/awebpinator`, `~/.local/share/applications/awebpinator.desktop`, and `~/.local/share/icons/hicolor/512x512/apps/awebpinator.png`.
+
 ## Run
 
 Run the app directly with Cargo:
