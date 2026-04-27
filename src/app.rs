@@ -10,7 +10,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::export::{
-    build_command_preview, export_animation_with_progress, normalized_output_path,
+    build_command_preview, export_animation_with_progress, normalized_output_path_for_format,
 };
 use crate::preferences::{UiPreferences, load_ui_preferences, save_ui_preferences};
 use crate::project::{load_autosave_project, load_project, save_autosave_project, save_project};
@@ -25,8 +25,8 @@ use crate::thumbnail::{
 };
 use crate::timeline::Timeline;
 use crate::types::{
-    CropRect, EncoderPreset, ExportJob, ExportPreset, ExportProfile, FitMode, FrameItem,
-    ProjectDocument, ResizeTarget,
+    CropRect, EncoderPreset, ExportFormat, ExportJob, ExportPreset, ExportProfile, FitMode,
+    FrameItem, ProjectDocument, ResizeTarget,
 };
 use gtk::glib::clone;
 use gtk::prelude::*;
@@ -114,6 +114,7 @@ pub enum AppMsg {
     },
     ApplyInspectorTransform(InspectorValues),
     SetExportPreset(ExportPreset),
+    SetExportFormat(ExportFormat),
     SetExportSizePreset(DimensionPreset),
     SetOutputPath(String),
     SetOutputWidth(u32),
@@ -521,6 +522,7 @@ pub struct AppWidgets {
     quick_resize_custom_width_spin: gtk::SpinButton,
     quick_resize_custom_height_spin: gtk::SpinButton,
     export_size_combo: gtk::ComboBoxText,
+    export_format_combo: gtk::ComboBoxText,
     batch_duration_combo: gtk::ComboBoxText,
     batch_duration_spin: gtk::SpinButton,
     loop_source_label: gtk::Label,
@@ -533,6 +535,7 @@ pub struct AppWidgets {
     export_preset_balanced_button: gtk::Button,
     export_preset_high_button: gtk::Button,
     export_preset_lossless_button: gtk::Button,
+    export_summary_format_value: gtk::Label,
     export_summary_dimensions_value: gtk::Label,
     export_summary_frame_count_value: gtk::Label,
     export_summary_duration_value: gtk::Label,
@@ -1462,12 +1465,14 @@ impl Component for AppModel {
         let output_entry = gtk::Entry::new();
         let suppress_output_entry_change = Rc::new(Cell::new(false));
         set_accessible_label(&output_entry, "Export output path");
-        output_entry.set_placeholder_text(Some("/path/to/output.webp"));
+        output_entry.set_placeholder_text(Some("/path/to/output.webp or /path/to/output.mp4"));
         output_entry.set_hexpand(true);
         output_entry.set_halign(gtk::Align::Fill);
         output_entry.add_css_class("control-surface");
         let browse_output_button =
             build_icon_button("folder-open-symbolic", "Choose export output folder");
+        let export_format_combo = combo_for_export_format();
+        export_format_combo.add_css_class("control-surface");
         let export_size_combo = combo_for_dimension_preset();
         export_size_combo.add_css_class("control-surface");
         let width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
@@ -1481,6 +1486,7 @@ impl Component for AppModel {
         let quality_spin = gtk::SpinButton::with_range(0.0, 100.0, 1.0);
         quality_spin.set_width_chars(3);
         quality_spin.add_css_class("control-surface");
+        set_accessible_label(&export_format_combo, "Export format");
         set_accessible_label(&export_size_combo, "Export size preset");
         set_accessible_label(&width_spin, "Export width");
         set_accessible_label(&height_spin, "Export height");
@@ -1517,11 +1523,8 @@ impl Component for AppModel {
         set_accessible_label(&fit_mode_combo, "Export fit mode");
         set_accessible_label(&raw_args_entry, "Advanced ffmpeg arguments");
         raw_args_entry.set_placeholder_text(Some("-metadata title='Animated export'"));
-        let export_button = build_labeled_button(
-            "Export Animated WebP",
-            "mail-send-symbolic",
-            "icon-tone-green",
-        );
+        let export_button =
+            build_labeled_button("Export File", "mail-send-symbolic", "icon-tone-green");
         let preview_export_button =
             build_labeled_button("Preview Export", "view-reveal-symbolic", "icon-tone-cyan");
         export_button.add_css_class("pill-button");
@@ -1538,6 +1541,11 @@ impl Component for AppModel {
             "Output File",
             "Where should we save your file?",
             &output_row,
+        ));
+        export_basic_box.append(&settings_row(
+            "Format",
+            "Choose animated WebP or MP4 video.",
+            &export_format_combo,
         ));
         export_basic_box.append(&settings_row(
             "Export Size",
@@ -1852,6 +1860,20 @@ impl Component for AppModel {
             #[strong]
             timeline_repeat_generation,
             move |_, key, _, state| {
+                if is_commit_key(key)
+                    && state
+                        .intersection(
+                            gdk::ModifierType::SHIFT_MASK
+                                | gdk::ModifierType::CONTROL_MASK
+                                | gdk::ModifierType::ALT_MASK
+                                | gdk::ModifierType::META_MASK,
+                        )
+                        .is_empty()
+                    && clear_completed_text_input_focus(&window)
+                {
+                    return false.into();
+                }
+
                 if !should_handle_timeline_shortcuts(&window) {
                     return false.into();
                 }
@@ -2034,6 +2056,22 @@ impl Component for AppModel {
             }
         ));
         window.add_controller(key_controller);
+
+        let blur_on_outside_click = gtk::GestureClick::new();
+        blur_on_outside_click.set_button(0);
+        blur_on_outside_click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        blur_on_outside_click.connect_pressed(clone!(
+            #[strong]
+            window,
+            move |_, _, x, y| {
+                let picked = window.pick(x, y, gtk::PickFlags::DEFAULT);
+                if picked.as_ref().is_some_and(is_text_input_focus) {
+                    return;
+                }
+                clear_text_input_focus(&window);
+            }
+        ));
+        window.add_controller(blur_on_outside_click);
 
         import_button.connect_clicked(clone!(
             #[strong]
@@ -2434,6 +2472,11 @@ impl Component for AppModel {
             sender,
             move |_| sender.input(AppMsg::SetExportPreset(ExportPreset::Lossless))
         ));
+        export_format_combo.connect_changed(clone!(
+            #[strong]
+            sender,
+            move |combo| sender.input(AppMsg::SetExportFormat(export_format_from_combo(combo)))
+        ));
         export_size_combo.connect_changed(clone!(
             #[strong]
             sender,
@@ -2591,6 +2634,7 @@ impl Component for AppModel {
             quick_resize_custom_width_spin,
             quick_resize_custom_height_spin,
             export_size_combo,
+            export_format_combo,
             batch_duration_combo,
             batch_duration_spin,
             loop_source_label,
@@ -2603,6 +2647,7 @@ impl Component for AppModel {
             export_preset_balanced_button,
             export_preset_high_button,
             export_preset_lossless_button,
+            export_summary_format_value,
             export_summary_dimensions_value,
             export_summary_frame_count_value,
             export_summary_duration_value,
@@ -3019,6 +3064,14 @@ impl Component for AppModel {
                 self.export_profile.apply_preset(preset);
                 self.invalidate_export_preview();
             }
+            AppMsg::SetExportFormat(format) => {
+                self.export_profile.format = format;
+                if let Some(path) = self.last_output_path.take() {
+                    self.last_output_path = Some(path.with_extension(format.extension()));
+                }
+                self.invalidate_export_preview();
+                self.recompute_command_preview();
+            }
             AppMsg::SetExportSizePreset(preset) => match preset {
                 DimensionPreset::Original => {
                     self.export_profile.output_width = None;
@@ -3104,7 +3157,10 @@ impl Component for AppModel {
                 }
             }
             AppMsg::ChooseOutputPath(path) => {
-                self.last_output_path = Some(normalized_output_path(&path));
+                self.last_output_path = Some(normalized_output_path_for_profile(
+                    &path,
+                    &self.export_profile,
+                ));
                 self.set_status(FooterStatusScope::Export, "Export output path updated.");
             }
             AppMsg::ExportNow => {
@@ -3113,7 +3169,8 @@ impl Component for AppModel {
                     self.recompute_command_preview();
                     return;
                 };
-                let output_path = normalized_output_path(&output_path);
+                let output_path =
+                    normalized_output_path_for_profile(&output_path, &self.export_profile);
                 self.last_output_path = Some(output_path.clone());
                 if self.export_in_progress {
                     self.set_status(FooterStatusScope::Export, "Export already running.");
@@ -3620,6 +3677,7 @@ impl Component for AppModel {
             &widgets.encoder_combo,
             self.export_profile.encoder_preset,
         );
+        sync_combo_active_export_format(&widgets.export_format_combo, self.export_profile.format);
         sync_combo_active_fit_mode(&widgets.fit_mode_combo, self.export_profile.fit_mode);
         sync_combo_active_dimension_preset(&widgets.quick_resize_combo, self.quick_resize_preset);
         set_visible_if_needed(
@@ -3717,6 +3775,9 @@ impl Component for AppModel {
         widgets.export_summary_estimated_size_value.set_label(
             &self.estimated_file_size_text(export_frame_count, self.total_duration_ms()),
         );
+        widgets
+            .export_summary_format_value
+            .set_label(self.export_profile.format.as_str());
         let (action_icon, action_title, action_detail, action_class) =
             self.export_action_presentation();
         widgets.export_action_icon.set_icon_name(Some(action_icon));
@@ -4867,7 +4928,7 @@ impl AppModel {
             return (
                 "view-refresh-symbolic",
                 "Exporting",
-                "Your animated WebP is being created.",
+                "Your export is being created.",
                 "export-action-info",
             );
         }
@@ -4891,7 +4952,7 @@ impl AppModel {
             return (
                 "dialog-warning-symbolic",
                 "Missing Output File",
-                "Choose where to save your animated WebP.",
+                "Choose where to save your export.",
                 "export-action-warning",
             );
         }
@@ -4913,14 +4974,14 @@ impl AppModel {
             return (
                 "emblem-ok-symbolic",
                 "Export Complete",
-                "Your animated WebP was created.",
+                "Your export was created.",
                 "export-action-success",
             );
         }
         (
             "emblem-ok-symbolic",
             "Ready to Export",
-            "Everything looks good. Click export to create your animated WebP.",
+            "Everything looks good. Click export to create your file.",
             "export-action-success",
         )
     }
@@ -5045,8 +5106,10 @@ impl AppModel {
         let output_path = self
             .last_output_path
             .as_deref()
-            .map(normalized_output_path)
-            .unwrap_or_else(|| PathBuf::from("output.webp"));
+            .map(|path| normalized_output_path_for_profile(path, &self.export_profile))
+            .unwrap_or_else(|| {
+                PathBuf::from(format!("output.{}", self.export_profile.format.extension()))
+            });
         self.command_preview = build_command_preview(
             Path::new("/tmp/awebpinator-preview.ffconcat"),
             &output_path,
@@ -5325,6 +5388,17 @@ fn combo_for_dimension_preset() -> gtk::ComboBoxText {
     combo
 }
 
+fn combo_for_export_format() -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    combo.set_hexpand(true);
+    combo.set_halign(gtk::Align::Fill);
+    for format in ExportFormat::ALL {
+        combo.append_text(format.as_str());
+    }
+    combo.set_active(Some(0));
+    combo
+}
+
 fn combo_for_encoder_preset() -> gtk::ComboBoxText {
     let combo = gtk::ComboBoxText::new();
     for preset in EncoderPreset::ALL {
@@ -5369,6 +5443,13 @@ fn dimension_preset_from_combo(combo: &gtk::ComboBoxText) -> DimensionPreset {
         Some("720p") => DimensionPreset::Hd720,
         Some("Custom") => DimensionPreset::Custom,
         _ => DimensionPreset::Original,
+    }
+}
+
+fn export_format_from_combo(combo: &gtk::ComboBoxText) -> ExportFormat {
+    match combo.active_text().as_deref() {
+        Some("MP4 Video") => ExportFormat::Mp4,
+        _ => ExportFormat::WebP,
     }
 }
 
@@ -5425,6 +5506,16 @@ fn sync_combo_active_dimension_preset(combo: &gtk::ComboBoxText, preset: Dimensi
         DimensionPreset::Hd1080 => 1,
         DimensionPreset::Hd720 => 2,
         DimensionPreset::Custom => 3,
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
+}
+
+fn sync_combo_active_export_format(combo: &gtk::ComboBoxText, format: ExportFormat) {
+    let target = match format {
+        ExportFormat::WebP => 0,
+        ExportFormat::Mp4 => 1,
     };
     if combo.active() != Some(target) {
         combo.set_active(Some(target));
@@ -6154,6 +6245,10 @@ fn export_dimension_preset(profile: &ExportProfile) -> DimensionPreset {
         (Some(1280), Some(720)) => DimensionPreset::Hd720,
         _ => DimensionPreset::Custom,
     }
+}
+
+fn normalized_output_path_for_profile(path: &Path, profile: &ExportProfile) -> PathBuf {
+    normalized_output_path_for_format(path, profile.format)
 }
 
 fn format_duration_ms(duration_ms: u64) -> String {
@@ -7090,10 +7185,68 @@ fn should_handle_timeline_shortcuts(window: &gtk::Window) -> bool {
         return true;
     };
 
-    !(focus.is::<gtk::Entry>()
-        || focus.is::<gtk::SpinButton>()
-        || focus.is::<gtk::TextView>()
-        || focus.is::<gtk::EditableLabel>())
+    !is_text_input_focus(&focus)
+}
+
+fn clear_completed_text_input_focus(window: &gtk::Window) -> bool {
+    let Some(focus) = gtk::prelude::RootExt::focus(window) else {
+        return false;
+    };
+
+    if !is_commit_terminating_input(&focus) {
+        return false;
+    }
+
+    clear_text_input_focus(window)
+}
+
+fn clear_text_input_focus(window: &gtk::Window) -> bool {
+    let Some(focus) = gtk::prelude::RootExt::focus(window) else {
+        return false;
+    };
+
+    if !is_text_input_focus(&focus) {
+        return false;
+    }
+
+    gtk::prelude::GtkWindowExt::set_focus(window, Option::<&gtk::Widget>::None);
+    true
+}
+
+fn is_text_input_focus(widget: &gtk::Widget) -> bool {
+    let mut current = Some(widget.clone());
+    while let Some(widget) = current {
+        if widget.is::<gtk::Entry>()
+            || widget.is::<gtk::SpinButton>()
+            || widget.is::<gtk::TextView>()
+            || widget.is::<gtk::EditableLabel>()
+        {
+            return true;
+        }
+        current = widget.parent();
+    }
+    false
+}
+
+fn is_commit_terminating_input(widget: &gtk::Widget) -> bool {
+    let mut current = Some(widget.clone());
+    while let Some(widget) = current {
+        if widget.is::<gtk::Entry>()
+            || widget.is::<gtk::SpinButton>()
+            || widget.is::<gtk::EditableLabel>()
+        {
+            return true;
+        }
+        current = widget.parent();
+    }
+    false
+}
+
+fn is_commit_key(key: gdk::Key) -> bool {
+    matches!(
+        key,
+        gdk::Key::Return | gdk::Key::KP_Enter | gdk::Key::ISO_Enter
+    )
 }
 
 fn open_image_dialog(window: &gtk::Window, sender: ComponentSender<AppModel>) {
@@ -7171,6 +7324,7 @@ fn choose_export_dialog(window: &gtk::Window, sender: ComponentSender<AppModel>)
         .cancel_label("Cancel")
         .action(gtk::FileChooserAction::Save)
         .build();
+    add_export_filter(&dialog);
     dialog.connect_response(move |dialog, response| {
         if response == gtk::ResponseType::Accept
             && let Some(file) = dialog.file().and_then(|file| file.path())
@@ -7180,6 +7334,16 @@ fn choose_export_dialog(window: &gtk::Window, sender: ComponentSender<AppModel>)
         dialog.destroy();
     });
     dialog.show();
+}
+
+fn add_export_filter(dialog: &gtk::FileChooserNative) {
+    let filter = gtk::FileFilter::new();
+    filter.set_name(Some("Animated WebP or MP4"));
+    filter.add_mime_type("image/webp");
+    filter.add_mime_type("video/mp4");
+    filter.add_pattern("*.webp");
+    filter.add_pattern("*.mp4");
+    dialog.add_filter(&filter);
 }
 
 fn add_image_filter(dialog: &gtk::FileChooserNative) {

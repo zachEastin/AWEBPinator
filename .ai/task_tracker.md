@@ -11,6 +11,24 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-27 - Defocus value inputs after edit completion
+
+- Status: Done
+- Request: When clicking outside of a setting value input or pressing Enter, deactivate that input so timeline/frame shortcuts work again.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`, `timeout 5s cargo run >/tmp/awebpinator-defocus-smoke.log 2>&1`
+- Notes: Added an Enter-key defocus path for focused single-line edit widgets and a capture-phase window click handler that clears focus only when the click lands outside editable widgets. Timeline shortcuts continue to stay suppressed while an editable widget remains focused, but normal frame shortcuts resume immediately after Enter or an outside click. The bounded GTK smoke launched `target/debug/awebpinator` and exited early with code `0` instead of timing out with `124`, with no panic or abort output, so it was treated as inconclusive rather than a full timeout-smoke pass.
+
+### 2026-04-27 - Add MP4 export and protect text input shortcuts
+
+- Status: Done
+- Request: Add MP4 export support and ensure focused text/value inputs receive normal editing keyboard shortcuts instead of timeline shortcuts.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/types.rs`, `README.md`, `AGENTS.md`
+- Files changed: `.ai/task_tracker.md`, `src/types.rs`, `src/export.rs`, `src/app.rs`, `README.md`, `AGENTS.md`
+- Verification: `cargo fmt --all`, `git diff --check`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run >/tmp/awebpinator-mp4-keyboard-smoke.log 2>&1`
+- Notes: Added a persisted `ExportFormat` choice with WebP as the default for existing projects, an Export Format combo in the Export tab, MP4 output normalization, and an MP4 ffmpeg branch using `libx264`, yuv420p-compatible even dimensions, CRF mapped from the existing quality value, and `+faststart`. Added unit coverage for MP4 command construction and a tiny MP4 export. Timeline capture-phase shortcuts now walk the focused widget's parent chain and skip timeline handling while entries, spin buttons, text views, or editable labels own focus so normal text editing shortcuts and arrow movement stay with the input. The bounded GTK smoke launched `target/debug/awebpinator` and exited early with code `0` instead of timing out with `124`, with no panic or abort output, so it was treated as inconclusive rather than a full timeout-smoke pass.
+
 ### 2026-04-24 - Add batch duration presets in Timeline Actions
 
 - Status: Done

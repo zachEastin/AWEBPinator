@@ -1,13 +1,13 @@
 # AWEBPinator
 
-AWEBPinator is a native Linux desktop app for assembling still images into animated WebP files with `ffmpeg`.
+AWEBPinator is a native Linux desktop app for assembling still images into animated WebP or MP4 files with `ffmpeg`.
 
 The current app is written in Rust with GTK4/Relm4 and supports:
 
 - importing image frames from the file picker or drag/drop
 - timeline ordering, selection, duplicate, copy/paste, remove, and duration edits
 - basic non-destructive transforms on selected frames
-- animated WebP export through `ffmpeg`
+- animated WebP and MP4 export through `ffmpeg`
 - project save/load
 - automatic session restore from the last clean window close
 
@@ -149,7 +149,7 @@ Use this when validating the app locally after a change.
 6. **Preview and transforms**: Rotate, flip, crop, resize, and change fit mode; expect the selected-frame preview to update after each edit.
 7. **Workflow tabs**: Visit Edit, Timeline, Export, and Diagnostics; expect each tab to show its controls without overlapping or clipped text.
 8. **Timeline loop action**: Run `Create Loop` from the Timeline tab; expect the app to append only the mirrored interior frames and double the original source start/end frame durations for a smoother turnaround.
-9. **Export**: Set an output path and export an animated WebP; expect the output file to exist and open in an image viewer/browser that supports animated WebP.
+9. **Export**: Set an output path and export an animated WebP or MP4; expect the output file to exist and open in a compatible viewer/player.
 10. **Project persistence**: Save a project, reopen it, and confirm frames, order, durations, transforms, and export settings are restored.
 
 ## VS Code

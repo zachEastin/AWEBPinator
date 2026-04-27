@@ -7,7 +7,7 @@ use anyhow::{Context, anyhow, bail};
 use tempfile::TempDir;
 
 use crate::thumbnail::render_frame_to_path;
-use crate::types::{ExportJob, ExportProfile, FrameItem, ResizeTarget};
+use crate::types::{ExportFormat, ExportJob, ExportProfile, FrameItem, ResizeTarget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportPhase {
@@ -25,10 +25,14 @@ pub struct ExportProgress {
 const PREPARE_PROGRESS_BUCKETS: usize = 24;
 
 pub fn normalized_output_path(path: &Path) -> PathBuf {
+    normalized_output_path_for_format(path, ExportFormat::WebP)
+}
+
+pub fn normalized_output_path_for_format(path: &Path, format: ExportFormat) -> PathBuf {
     if path.extension().is_some() {
         return path.to_path_buf();
     }
-    path.with_extension("webp")
+    path.with_extension(format.extension())
 }
 
 pub fn build_effective_command(
@@ -52,23 +56,44 @@ pub fn build_effective_command(
         "0".to_string(),
         "-i".to_string(),
         manifest_path.display().to_string(),
-        "-c:v".to_string(),
-        "libwebp_anim".to_string(),
-        "-quality".to_string(),
-        format!("{:.2}", profile.quality),
-        "-preset".to_string(),
-        profile.encoder_preset.ffmpeg_value().to_string(),
-        "-loop".to_string(),
-        profile.loop_count.to_string(),
-        "-cr_threshold".to_string(),
-        profile.cr_threshold.to_string(),
-        "-cr_size".to_string(),
-        profile.cr_size.to_string(),
     ];
 
-    if profile.lossless {
-        args.push("-lossless".to_string());
-        args.push("1".to_string());
+    match profile.format {
+        ExportFormat::WebP => {
+            args.extend([
+                "-c:v".to_string(),
+                "libwebp_anim".to_string(),
+                "-quality".to_string(),
+                format!("{:.2}", profile.quality),
+                "-preset".to_string(),
+                profile.encoder_preset.ffmpeg_value().to_string(),
+                "-loop".to_string(),
+                profile.loop_count.to_string(),
+                "-cr_threshold".to_string(),
+                profile.cr_threshold.to_string(),
+                "-cr_size".to_string(),
+                profile.cr_size.to_string(),
+            ]);
+
+            if profile.lossless {
+                args.push("-lossless".to_string());
+                args.push("1".to_string());
+            }
+        }
+        ExportFormat::Mp4 => {
+            args.extend([
+                "-c:v".to_string(),
+                "libx264".to_string(),
+                "-crf".to_string(),
+                mp4_crf_for_quality(profile.quality).to_string(),
+                "-preset".to_string(),
+                "medium".to_string(),
+                "-vf".to_string(),
+                "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p".to_string(),
+                "-movflags".to_string(),
+                "+faststart".to_string(),
+            ]);
+        }
     }
 
     if !profile.raw_args.trim().is_empty() {
@@ -109,7 +134,7 @@ pub fn export_animation_with_progress<F>(
 where
     F: FnMut(ExportProgress),
 {
-    let output_path = normalized_output_path(output_path);
+    let output_path = normalized_output_path_for_format(output_path, profile.format);
     let enabled_frames: Vec<_> = frames
         .iter()
         .filter(|frame| frame.enabled)
@@ -168,7 +193,7 @@ where
     on_progress(ExportProgress {
         phase: ExportPhase::Encoding,
         fraction: 0.9,
-        detail: "Encoding animated WebP...".to_string(),
+        detail: format!("Encoding {}...", profile.format),
     });
 
     let output = Command::new("ffmpeg")
@@ -197,6 +222,11 @@ where
         effective_command,
         status: "Export finished".to_string(),
     })
+}
+
+fn mp4_crf_for_quality(quality: f32) -> u8 {
+    let quality = quality.clamp(0.0, 100.0);
+    (35.0 - (quality * 23.0 / 100.0)).round().clamp(12.0, 35.0) as u8
 }
 
 pub fn write_concat_manifest(path: &Path, entries: &[(PathBuf, u32)]) -> anyhow::Result<()> {
@@ -252,7 +282,7 @@ mod tests {
     use image::{Rgba, RgbaImage};
     use tempfile::tempdir;
 
-    use crate::types::{EncoderPreset, ExportPreset, FitMode};
+    use crate::types::{EncoderPreset, ExportFormat, ExportPreset, FitMode};
 
     use super::{
         ExportPhase, build_effective_command, export_animation, export_animation_with_progress,
@@ -287,6 +317,7 @@ mod tests {
     #[test]
     fn command_builder_includes_raw_args() {
         let profile = ExportProfile {
+            format: ExportFormat::WebP,
             preset: ExportPreset::Balanced,
             output_width: Some(320),
             output_height: Some(240),
@@ -312,6 +343,23 @@ mod tests {
     }
 
     #[test]
+    fn command_builder_can_target_mp4() {
+        let profile = ExportProfile {
+            format: ExportFormat::Mp4,
+            quality: 80.0,
+            ..ExportProfile::default()
+        };
+
+        let args =
+            build_effective_command(Path::new("frames.ffconcat"), Path::new("out.mp4"), &profile)
+                .unwrap();
+
+        assert!(args.contains(&"libx264".to_string()));
+        assert!(args.contains(&"+faststart".to_string()));
+        assert!(!args.contains(&"libwebp_anim".to_string()));
+    }
+
+    #[test]
     fn output_path_adds_webp_extension_when_missing() {
         assert_eq!(
             normalized_output_path(Path::new("/tmp/demo")),
@@ -321,6 +369,31 @@ mod tests {
             normalized_output_path(Path::new("/tmp/demo.webp")),
             Path::new("/tmp/demo.webp")
         );
+    }
+
+    #[test]
+    fn export_adds_mp4_extension_when_output_has_no_extension() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("one.png");
+        tiny_png(&first, [255, 0, 0, 255]);
+
+        let frames = vec![FrameItem {
+            id: 1,
+            source_path: first,
+            duration_ms: 120,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: None,
+            enabled: true,
+            source_dimensions: Some((4, 4)),
+        }];
+        let profile = ExportProfile {
+            format: ExportFormat::Mp4,
+            ..ExportProfile::default()
+        };
+        let output = dir.path().join("animation");
+        let job = export_animation(&frames, &profile, &output).unwrap();
+        assert_eq!(job.output_path, dir.path().join("animation.mp4"));
+        assert!(job.output_path.exists());
     }
 
     #[test]

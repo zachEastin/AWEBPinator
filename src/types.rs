@@ -80,6 +80,37 @@ impl fmt::Display for EncoderPreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ExportFormat {
+    #[default]
+    WebP,
+    Mp4,
+}
+
+impl ExportFormat {
+    pub const ALL: [Self; 2] = [Self::WebP, Self::Mp4];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WebP => "Animated WebP",
+            Self::Mp4 => "MP4 Video",
+        }
+    }
+
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::WebP => "webp",
+            Self::Mp4 => "mp4",
+        }
+    }
+}
+
+impl fmt::Display for ExportFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ExportPreset {
     FastPreview,
     #[default]
@@ -172,6 +203,8 @@ impl FrameItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExportProfile {
+    #[serde(default)]
+    pub format: ExportFormat,
     pub preset: ExportPreset,
     pub output_width: Option<u32>,
     pub output_height: Option<u32>,
@@ -196,6 +229,7 @@ impl ExportProfile {
     pub fn from_preset(preset: ExportPreset) -> Self {
         match preset {
             ExportPreset::FastPreview => Self {
+                format: ExportFormat::WebP,
                 preset,
                 output_width: None,
                 output_height: None,
@@ -210,6 +244,7 @@ impl ExportProfile {
                 raw_args: String::new(),
             },
             ExportPreset::Balanced => Self {
+                format: ExportFormat::WebP,
                 preset,
                 output_width: None,
                 output_height: None,
@@ -224,6 +259,7 @@ impl ExportProfile {
                 raw_args: String::new(),
             },
             ExportPreset::HighQuality => Self {
+                format: ExportFormat::WebP,
                 preset,
                 output_width: None,
                 output_height: None,
@@ -238,6 +274,7 @@ impl ExportProfile {
                 raw_args: String::new(),
             },
             ExportPreset::Lossless => Self {
+                format: ExportFormat::WebP,
                 preset,
                 output_width: None,
                 output_height: None,
@@ -255,12 +292,14 @@ impl ExportProfile {
     }
 
     pub fn apply_preset(&mut self, preset: ExportPreset) {
+        let format = self.format;
         let raw_args = self.raw_args.clone();
         let output_width = self.output_width;
         let output_height = self.output_height;
         let loop_count = self.loop_count;
         let overwrite = self.overwrite;
         *self = Self::from_preset(preset);
+        self.format = format;
         self.raw_args = raw_args;
         self.output_width = output_width;
         self.output_height = output_height;

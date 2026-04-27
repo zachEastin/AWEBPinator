@@ -6,7 +6,7 @@ This file is for future agents working in this repository.
 
 - Desktop app for Linux/Fedora
 - Rust + GTK4 + Relm4
-- Uses system `ffmpeg` and `ffprobe` to export animated WebP files
+- Uses system `ffmpeg` and `ffprobe` to export animated WebP and MP4 files
 - Main code lives in `src/`
 
 ## Environment Expectations
