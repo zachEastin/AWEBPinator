@@ -7,7 +7,7 @@ The current app is written in Rust with GTK4/Relm4 and supports:
 - importing image frames from the file picker or drag/drop
 - timeline ordering, selection, duplicate, copy/paste, remove, and duration edits
 - basic non-destructive transforms on selected frames
-- animated WebP and MP4 export through `ffmpeg`
+- animated WebP export plus MP4 export with runtime-detected H.265/H.264/AV1 encoder choices through `ffmpeg`
 - project save/load
 - automatic session restore from the last clean window close
 

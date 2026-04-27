@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::export::{
     build_command_preview, export_animation_with_progress, normalized_output_path_for_format,
 };
+use crate::mp4::{known_mp4_encoder_label, normalized_mp4_encoder};
 use crate::preferences::{UiPreferences, load_ui_preferences, save_ui_preferences};
 use crate::project::{load_autosave_project, load_project, save_autosave_project, save_project};
 use crate::runtime::{Diagnostics, collect_diagnostics};
@@ -115,6 +116,7 @@ pub enum AppMsg {
     ApplyInspectorTransform(InspectorValues),
     SetExportPreset(ExportPreset),
     SetExportFormat(ExportFormat),
+    SetMp4VideoEncoder(String),
     SetExportSizePreset(DimensionPreset),
     SetOutputPath(String),
     SetOutputWidth(u32),
@@ -523,6 +525,7 @@ pub struct AppWidgets {
     quick_resize_custom_height_spin: gtk::SpinButton,
     export_size_combo: gtk::ComboBoxText,
     export_format_combo: gtk::ComboBoxText,
+    mp4_codec_combo: gtk::ComboBoxText,
     batch_duration_combo: gtk::ComboBoxText,
     batch_duration_spin: gtk::SpinButton,
     loop_source_label: gtk::Label,
@@ -573,6 +576,7 @@ pub struct AppWidgets {
     resize_h: gtk::SpinButton,
     inspector_fit_combo: gtk::ComboBoxText,
     timeline_render_signature: u64,
+    mp4_codec_combo_signature: String,
     preview_picture_path: Option<PathBuf>,
     loop_preview_picture_path: Option<PathBuf>,
     export_preview_picture_path: Option<PathBuf>,
@@ -682,6 +686,7 @@ impl Component for AppModel {
                 Vec::new()
             }
         };
+        model.sync_export_profile_to_diagnostics();
         model.recompute_command_preview();
         model.sync_quick_resize_state_from_selection();
 
@@ -1405,6 +1410,14 @@ impl Component for AppModel {
             .spacing(12)
             .hexpand(true)
             .build();
+        let export_right_scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .hexpand(true)
+            .vexpand(true)
+            .min_content_height(0)
+            .child(&export_right)
+            .build();
         let preset_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
@@ -1475,6 +1488,8 @@ impl Component for AppModel {
         export_format_combo.add_css_class("control-surface");
         let export_size_combo = combo_for_dimension_preset();
         export_size_combo.add_css_class("control-surface");
+        let mp4_codec_combo = gtk::ComboBoxText::new();
+        mp4_codec_combo.add_css_class("control-surface");
         let width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
         width_spin.add_css_class("control-surface");
         let height_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
@@ -1488,6 +1503,7 @@ impl Component for AppModel {
         quality_spin.add_css_class("control-surface");
         set_accessible_label(&export_format_combo, "Export format");
         set_accessible_label(&export_size_combo, "Export size preset");
+        set_accessible_label(&mp4_codec_combo, "MP4 codec");
         set_accessible_label(&width_spin, "Export width");
         set_accessible_label(&height_spin, "Export height");
         set_accessible_label(&quality_scale, "Export quality slider");
@@ -1684,6 +1700,14 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Vertical)
             .spacing(10)
             .build();
+        let codec_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        codec_box.append(&helper_label(
+            "Choose the MP4 video codec and encoder path detected on this system.",
+        ));
+        codec_box.append(&mp4_codec_combo);
         let export_grid = gtk::Grid::builder()
             .column_spacing(8)
             .row_spacing(8)
@@ -1705,12 +1729,17 @@ impl Component for AppModel {
         export_advanced_box.append(&helper_label(
             "Show advanced export settings and encoder options.",
         ));
+        export_advanced_box.append(&collapsible_section("Codec", &codec_box, true));
         export_advanced_box.append(&lossless_check);
         export_advanced_box.append(&export_grid);
         export_advanced_box.append(&section("Effective Command", &command_preview_label));
         export_body.append(&export_left);
-        export_right.append(&section("Advanced Options", &export_advanced_box));
-        export_body.append(&export_right);
+        export_right.append(&collapsible_section(
+            "Advanced Options",
+            &export_advanced_box,
+            true,
+        ));
+        export_body.append(&export_right_scroll);
         export_page.append(&export_body);
         let export_scroll = page_scroller(&export_page);
         page_stack.add_titled(
@@ -2477,6 +2506,17 @@ impl Component for AppModel {
             sender,
             move |combo| sender.input(AppMsg::SetExportFormat(export_format_from_combo(combo)))
         ));
+        mp4_codec_combo.connect_changed(clone!(
+            #[strong]
+            sender,
+            move |combo| {
+                if let Some(active_id) = combo.active_id()
+                    && !active_id.is_empty()
+                {
+                    sender.input(AppMsg::SetMp4VideoEncoder(active_id.to_string()));
+                }
+            }
+        ));
         export_size_combo.connect_changed(clone!(
             #[strong]
             sender,
@@ -2635,6 +2675,7 @@ impl Component for AppModel {
             quick_resize_custom_height_spin,
             export_size_combo,
             export_format_combo,
+            mp4_codec_combo,
             batch_duration_combo,
             batch_duration_spin,
             loop_source_label,
@@ -2685,6 +2726,7 @@ impl Component for AppModel {
             resize_h,
             inspector_fit_combo,
             timeline_render_signature: 0,
+            mp4_codec_combo_signature: String::new(),
             preview_picture_path: None,
             loop_preview_picture_path: None,
             export_preview_picture_path: None,
@@ -2748,6 +2790,8 @@ impl Component for AppModel {
             }
             AppMsg::RunDiagnostics => {
                 self.diagnostics = collect_diagnostics();
+                self.sync_export_profile_to_diagnostics();
+                self.recompute_command_preview();
                 self.set_status(FooterStatusScope::Diagnostics, "Diagnostics refreshed.");
             }
             AppMsg::PreviewExport => {
@@ -3066,10 +3110,17 @@ impl Component for AppModel {
             }
             AppMsg::SetExportFormat(format) => {
                 self.export_profile.format = format;
+                if format == ExportFormat::Mp4 {
+                    self.sync_export_profile_to_diagnostics();
+                }
                 if let Some(path) = self.last_output_path.take() {
                     self.last_output_path = Some(path.with_extension(format.extension()));
                 }
                 self.invalidate_export_preview();
+                self.recompute_command_preview();
+            }
+            AppMsg::SetMp4VideoEncoder(encoder) => {
+                self.export_profile.mp4_video_encoder = encoder;
                 self.recompute_command_preview();
             }
             AppMsg::SetExportSizePreset(preset) => match preset {
@@ -3503,7 +3554,7 @@ impl Component for AppModel {
             &widgets.content_stack,
         );
         set_visible_if_needed(&widgets.edit_advanced_box, self.advanced_mode);
-        set_visible_if_needed(&widgets.export_advanced_box, self.advanced_mode);
+        set_visible_if_needed(&widgets.export_advanced_box, true);
         set_visible_if_needed(&widgets.diagnostics_details_box, self.advanced_mode);
 
         set_widget_css_class(
@@ -3678,6 +3729,12 @@ impl Component for AppModel {
             self.export_profile.encoder_preset,
         );
         sync_combo_active_export_format(&widgets.export_format_combo, self.export_profile.format);
+        sync_mp4_codec_combo(
+            &widgets.mp4_codec_combo,
+            &self.diagnostics,
+            &self.export_profile.mp4_video_encoder,
+            &mut widgets.mp4_codec_combo_signature,
+        );
         sync_combo_active_fit_mode(&widgets.fit_mode_combo, self.export_profile.fit_mode);
         sync_combo_active_dimension_preset(&widgets.quick_resize_combo, self.quick_resize_preset);
         set_visible_if_needed(
@@ -3743,6 +3800,17 @@ impl Component for AppModel {
             self.export_profile.output_height.unwrap_or_default() as f64,
         );
         set_check_if_needed(&widgets.lossless_check, self.export_profile.lossless);
+        let webp_format_active = self.export_profile.format == ExportFormat::WebP;
+        let mp4_format_active = self.export_profile.format == ExportFormat::Mp4;
+        widgets.encoder_combo.set_sensitive(webp_format_active);
+        widgets.cr_threshold_spin.set_sensitive(webp_format_active);
+        widgets.cr_size_spin.set_sensitive(webp_format_active);
+        widgets.lossless_check.set_sensitive(webp_format_active);
+        widgets.loop_count_combo.set_sensitive(webp_format_active);
+        widgets.loop_spin.set_sensitive(webp_format_active);
+        widgets.mp4_codec_combo.set_sensitive(
+            mp4_format_active && !self.diagnostics.mp4_capabilities.encoder_choices.is_empty(),
+        );
         set_spin_if_needed(
             &widgets.cr_threshold_spin,
             self.export_profile.cr_threshold as f64,
@@ -4320,6 +4388,7 @@ impl AppModel {
         self.selection = ids.iter().copied().collect();
         self.selection_anchor_id = self.timeline.frames().first().map(|frame| frame.id);
         self.export_profile = document.export_profile;
+        self.sync_export_profile_to_diagnostics();
         self.last_output_path = document.last_output_path;
         self.preview_path = None;
         self.preview_frame_id = None;
@@ -4327,6 +4396,15 @@ impl AppModel {
         self.invalidate_export_preview();
         self.sync_quick_resize_state_from_selection();
         ids
+    }
+
+    fn sync_export_profile_to_diagnostics(&mut self) {
+        if let Some(encoder) = normalized_mp4_encoder(
+            &self.export_profile.mp4_video_encoder,
+            &self.diagnostics.mp4_capabilities,
+        ) {
+            self.export_profile.mp4_video_encoder = encoder;
+        }
     }
 
     fn save_autosave_project(&self) -> anyhow::Result<()> {
@@ -5001,14 +5079,43 @@ impl AppModel {
         };
         let duration_factor = (duration_ms as f64 / 1000.0).max(0.2);
         let quality_factor = (self.export_profile.quality as f64 / 80.0).clamp(0.35, 1.4);
-        let lossless_factor = if self.export_profile.lossless {
-            2.0
-        } else {
-            1.0
+        let codec_factor = match self.export_profile.format {
+            ExportFormat::WebP => {
+                if self.export_profile.lossless {
+                    2.0
+                } else {
+                    1.0
+                }
+            }
+            ExportFormat::Mp4 => {
+                let encoder = self.export_profile.mp4_video_encoder.as_str();
+                if encoder.contains("av1") {
+                    0.62
+                } else if encoder.contains("265") || encoder.contains("hevc") {
+                    0.78
+                } else {
+                    1.0
+                }
+            }
         };
-        let mb = (duration_factor * dimensions_factor * quality_factor * lossless_factor * 0.85)
-            .max(0.1);
-        format!("~ {:.1} MB", mb)
+        let mb =
+            (duration_factor * dimensions_factor * quality_factor * codec_factor * 0.85).max(0.1);
+        format!("~ {:.1} MB ({})", mb, self.export_estimate_context_text())
+    }
+
+    fn export_estimate_context_text(&self) -> String {
+        match self.export_profile.format {
+            ExportFormat::WebP => {
+                if self.export_profile.lossless {
+                    "Animated WebP, lossless".to_string()
+                } else {
+                    "Animated WebP, lossy".to_string()
+                }
+            }
+            ExportFormat::Mp4 => known_mp4_encoder_label(&self.export_profile.mp4_video_encoder)
+                .map(|label| format!("MP4, {label}"))
+                .unwrap_or_else(|| format!("MP4, {}", self.export_profile.mp4_video_encoder)),
+        }
     }
 
     fn selection_dimension_preset(&self) -> DimensionPreset {
@@ -5520,6 +5627,39 @@ fn sync_combo_active_export_format(combo: &gtk::ComboBoxText, format: ExportForm
     if combo.active() != Some(target) {
         combo.set_active(Some(target));
     }
+}
+
+fn sync_mp4_codec_combo(
+    combo: &gtk::ComboBoxText,
+    diagnostics: &Diagnostics,
+    selected_encoder: &str,
+    signature: &mut String,
+) {
+    let next_signature = diagnostics
+        .mp4_capabilities
+        .encoder_choices
+        .iter()
+        .map(|choice| format!("{}={}", choice.ffmpeg_name, choice.label))
+        .chain(std::iter::once(format!("selected={selected_encoder}")))
+        .collect::<Vec<_>>()
+        .join("|");
+
+    if *signature == next_signature {
+        return;
+    }
+
+    combo.remove_all();
+    for choice in &diagnostics.mp4_capabilities.encoder_choices {
+        combo.append(Some(&choice.ffmpeg_name), &choice.label);
+    }
+    if diagnostics.mp4_capabilities.encoder_choices.is_empty() {
+        combo.append(Some(""), "No supported MP4 encoders detected");
+        combo.set_active(Some(0));
+    } else if !combo.set_active_id(Some(selected_encoder)) {
+        combo.set_active(Some(0));
+    }
+
+    *signature = next_signature;
 }
 
 fn sync_combo_active_encoder_preset(combo: &gtk::ComboBoxText, preset: EncoderPreset) {

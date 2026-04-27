@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::mp4::default_mp4_encoder_name;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FitMode {
     #[default]
@@ -212,6 +214,8 @@ pub struct ExportProfile {
     pub quality: f32,
     pub lossless: bool,
     pub encoder_preset: EncoderPreset,
+    #[serde(default = "default_mp4_encoder_name")]
+    pub mp4_video_encoder: String,
     pub cr_threshold: u32,
     pub cr_size: u32,
     pub loop_count: u32,
@@ -237,6 +241,7 @@ impl ExportProfile {
                 quality: 45.0,
                 lossless: false,
                 encoder_preset: EncoderPreset::Default,
+                mp4_video_encoder: default_mp4_encoder_name(),
                 cr_threshold: 0,
                 cr_size: 16,
                 loop_count: 0,
@@ -252,6 +257,7 @@ impl ExportProfile {
                 quality: 75.0,
                 lossless: false,
                 encoder_preset: EncoderPreset::Default,
+                mp4_video_encoder: default_mp4_encoder_name(),
                 cr_threshold: 0,
                 cr_size: 16,
                 loop_count: 0,
@@ -267,6 +273,7 @@ impl ExportProfile {
                 quality: 92.0,
                 lossless: false,
                 encoder_preset: EncoderPreset::Photo,
+                mp4_video_encoder: default_mp4_encoder_name(),
                 cr_threshold: 0,
                 cr_size: 16,
                 loop_count: 0,
@@ -282,6 +289,7 @@ impl ExportProfile {
                 quality: 100.0,
                 lossless: true,
                 encoder_preset: EncoderPreset::Drawing,
+                mp4_video_encoder: default_mp4_encoder_name(),
                 cr_threshold: 0,
                 cr_size: 16,
                 loop_count: 0,
@@ -298,6 +306,7 @@ impl ExportProfile {
         let output_height = self.output_height;
         let loop_count = self.loop_count;
         let overwrite = self.overwrite;
+        let mp4_video_encoder = self.mp4_video_encoder.clone();
         *self = Self::from_preset(preset);
         self.format = format;
         self.raw_args = raw_args;
@@ -305,6 +314,7 @@ impl ExportProfile {
         self.output_height = output_height;
         self.loop_count = loop_count;
         self.overwrite = overwrite;
+        self.mp4_video_encoder = mp4_video_encoder;
     }
 }
 

@@ -11,6 +11,33 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-27 - Annotate export size estimate with active format and codec
+
+- Status: Done
+- Request: Update the Export Summary `Estimated File Size` value so it reflects the active format and codec.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`
+- Notes: The Export Summary `Estimated File Size` value now includes the active format/codec context, for example `Animated WebP, lossless` or `MP4, H.265 / HEVC (NVIDIA NVENC)`. The estimate heuristic now also distinguishes MP4 AV1/HEVC/H.264 paths instead of reusing the old WebP-only multiplier.
+
+### 2026-04-27 - Restructure Export advanced codec controls
+
+- Status: Done
+- Request: Put codec settings in a `Codec` dropdown panel inside the Export tab's `Advanced Options` dropdown panel, open by default.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`, `timeout 5s cargo run >/tmp/awebpinator-codec-panel-smoke.log 2>&1`, `timeout 5s cargo run >/tmp/awebpinator-codec-visibility-smoke.log 2>&1`
+- Notes: Converted the Export tab's `Advanced Options` area into a collapsible section opened by default and moved the MP4 codec selector into its own nested `Codec` collapsible section, also opened by default. Removed the codec row from the generic advanced grid so the control now lives only in the expected dedicated panel. Follow-up fix: Export advanced content is no longer hidden behind the global Advanced toggle, and the right-side Export settings column now has its own vertical scroller so the codec panel remains reachable without forcing the page into the previous oversized GtkBox measurement path. The second bounded GTK smoke timed out with exit code `124` and did not reproduce the earlier Gtk/Gdk warning patterns in the captured log.
+
+### 2026-04-27 - Add runtime MP4 codec selection with HEVC hardware default
+
+- Status: Done
+- Request: Add industry-standard, ffmpeg-available MP4 codec settings and default MP4 export to H.265 with detected hardware accelerators preferred, GPU first.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/types.rs`, `src/runtime.rs`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`, `src/export.rs`, `src/lib.rs`, `src/mp4.rs`, `src/runtime.rs`, `src/types.rs`, `README.md`
+- Verification: `cargo fmt --all`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo build`, `git diff --check`, `timeout 5s cargo run >/tmp/awebpinator-mp4-codec-smoke.log 2>&1`
+- Notes: Added runtime ffmpeg capability detection for supported MP4 encoders and hardware acceleration backends, then exposed a new MP4 codec combo populated only with supported HEVC/H.264/AV1 options. New sessions and restored projects now normalize the saved MP4 encoder to the best available option on the current machine, preferring HEVC and GPU-backed paths first; on this system that resolves to `hevc_nvenc`. MP4 command generation now uses encoder-specific arguments for `libx265`, `libx264`, NVENC, QSV, VAAPI, `libsvtav1`, and `libaom-av1`, including `hvc1` tagging for HEVC MP4 outputs. The bounded GTK smoke timed out with exit code `124` after launching `target/debug/awebpinator`, with no panic or abort output.
+
 ### 2026-04-27 - Defocus value inputs after edit completion
 
 - Status: Done

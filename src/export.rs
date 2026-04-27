@@ -6,6 +6,7 @@ use std::process::Command;
 use anyhow::{Context, anyhow, bail};
 use tempfile::TempDir;
 
+use crate::mp4::{detect_dri_render_node, is_known_mp4_encoder, software_fallback_mp4_encoder};
 use crate::thumbnail::render_frame_to_path;
 use crate::types::{ExportFormat, ExportJob, ExportProfile, FrameItem, ResizeTarget};
 
@@ -81,18 +82,7 @@ pub fn build_effective_command(
             }
         }
         ExportFormat::Mp4 => {
-            args.extend([
-                "-c:v".to_string(),
-                "libx264".to_string(),
-                "-crf".to_string(),
-                mp4_crf_for_quality(profile.quality).to_string(),
-                "-preset".to_string(),
-                "medium".to_string(),
-                "-vf".to_string(),
-                "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p".to_string(),
-                "-movflags".to_string(),
-                "+faststart".to_string(),
-            ]);
+            args.extend(build_mp4_args(profile)?);
         }
     }
 
@@ -229,6 +219,150 @@ fn mp4_crf_for_quality(quality: f32) -> u8 {
     (35.0 - (quality * 23.0 / 100.0)).round().clamp(12.0, 35.0) as u8
 }
 
+fn build_mp4_args(profile: &ExportProfile) -> anyhow::Result<Vec<String>> {
+    let selected_encoder = resolved_mp4_encoder_name(&profile.mp4_video_encoder);
+    let selected_encoder_name = selected_encoder.as_str();
+    let mut args = Vec::new();
+
+    match selected_encoder_name {
+        "hevc_nvenc" | "h264_nvenc" | "av1_nvenc" => {
+            args.extend([
+                "-c:v".to_string(),
+                selected_encoder.clone(),
+                "-cq".to_string(),
+                mp4_nvenc_cq_for_quality(profile.quality).to_string(),
+                "-b:v".to_string(),
+                "0".to_string(),
+                "-preset".to_string(),
+                "p5".to_string(),
+                "-vf".to_string(),
+                software_mp4_filter().to_string(),
+            ]);
+        }
+        "hevc_qsv" | "h264_qsv" | "av1_qsv" => {
+            let render_node = detect_dri_render_node()
+                .ok_or_else(|| anyhow!("no /dev/dri render node available for Quick Sync"))?;
+            args.extend([
+                "-qsv_device".to_string(),
+                render_node,
+                "-vf".to_string(),
+                hardware_mp4_filter().to_string(),
+                "-c:v".to_string(),
+                selected_encoder.clone(),
+                "-global_quality".to_string(),
+                mp4_global_quality_for_quality(profile.quality).to_string(),
+            ]);
+        }
+        "hevc_vaapi" | "h264_vaapi" | "av1_vaapi" => {
+            let render_node = detect_dri_render_node()
+                .ok_or_else(|| anyhow!("no /dev/dri render node available for VAAPI"))?;
+            args.extend([
+                "-vaapi_device".to_string(),
+                render_node,
+                "-vf".to_string(),
+                hardware_mp4_filter().to_string(),
+                "-c:v".to_string(),
+                selected_encoder.clone(),
+                "-global_quality".to_string(),
+                mp4_global_quality_for_quality(profile.quality).to_string(),
+            ]);
+        }
+        "libsvtav1" => {
+            args.extend([
+                "-c:v".to_string(),
+                selected_encoder.clone(),
+                "-crf".to_string(),
+                mp4_crf_for_quality(profile.quality).to_string(),
+                "-preset".to_string(),
+                "6".to_string(),
+                "-vf".to_string(),
+                software_mp4_filter().to_string(),
+            ]);
+        }
+        "libaom-av1" => {
+            args.extend([
+                "-c:v".to_string(),
+                selected_encoder.clone(),
+                "-crf".to_string(),
+                mp4_crf_for_quality(profile.quality).to_string(),
+                "-b:v".to_string(),
+                "0".to_string(),
+                "-cpu-used".to_string(),
+                "4".to_string(),
+                "-vf".to_string(),
+                software_mp4_filter().to_string(),
+            ]);
+        }
+        "libx264" | "libx265" => {
+            args.extend([
+                "-c:v".to_string(),
+                selected_encoder.clone(),
+                "-crf".to_string(),
+                mp4_crf_for_quality(profile.quality).to_string(),
+                "-preset".to_string(),
+                "medium".to_string(),
+                "-vf".to_string(),
+                software_mp4_filter().to_string(),
+            ]);
+        }
+        _ => {
+            args.extend([
+                "-c:v".to_string(),
+                "libx265".to_string(),
+                "-crf".to_string(),
+                mp4_crf_for_quality(profile.quality).to_string(),
+                "-preset".to_string(),
+                "medium".to_string(),
+                "-vf".to_string(),
+                software_mp4_filter().to_string(),
+            ]);
+        }
+    }
+
+    if matches!(
+        selected_encoder_name,
+        "hevc_nvenc" | "hevc_qsv" | "hevc_vaapi" | "libx265"
+    ) {
+        args.extend(["-tag:v".to_string(), "hvc1".to_string()]);
+    }
+
+    args.extend(["-movflags".to_string(), "+faststart".to_string()]);
+    Ok(args)
+}
+
+fn resolved_mp4_encoder_name(selected: &str) -> String {
+    if is_known_mp4_encoder(selected) {
+        match selected {
+            "hevc_qsv" | "h264_qsv" | "av1_qsv" | "hevc_vaapi" | "h264_vaapi" | "av1_vaapi"
+                if detect_dri_render_node().is_none() =>
+            {
+                software_fallback_mp4_encoder(selected).to_string()
+            }
+            _ => selected.to_string(),
+        }
+    } else {
+        "libx265".to_string()
+    }
+}
+
+fn software_mp4_filter() -> &'static str {
+    "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p"
+}
+
+fn hardware_mp4_filter() -> &'static str {
+    "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=nv12,hwupload"
+}
+
+fn mp4_nvenc_cq_for_quality(quality: f32) -> u8 {
+    let quality = quality.clamp(0.0, 100.0);
+    (35.0 - (quality * 23.0 / 100.0)).round().clamp(10.0, 35.0) as u8
+}
+
+fn mp4_global_quality_for_quality(quality: f32) -> u8 {
+    let quality = quality.clamp(0.0, 100.0);
+    (35.0 - (quality * 23.0 / 100.0)).round().clamp(10.0, 35.0) as u8
+}
+
 pub fn write_concat_manifest(path: &Path, entries: &[(PathBuf, u32)]) -> anyhow::Result<()> {
     if entries.is_empty() {
         bail!("cannot write an empty concat manifest");
@@ -290,7 +424,7 @@ mod tests {
     };
 
     fn tiny_png(path: &Path, color: [u8; 4]) {
-        let image = RgbaImage::from_pixel(4, 4, Rgba(color));
+        let image = RgbaImage::from_pixel(64, 64, Rgba(color));
         image.save(path).unwrap();
     }
 
@@ -325,6 +459,7 @@ mod tests {
             quality: 80.0,
             lossless: false,
             encoder_preset: EncoderPreset::Photo,
+            mp4_video_encoder: "libx265".to_string(),
             cr_threshold: 0,
             cr_size: 16,
             loop_count: 0,
@@ -346,6 +481,7 @@ mod tests {
     fn command_builder_can_target_mp4() {
         let profile = ExportProfile {
             format: ExportFormat::Mp4,
+            mp4_video_encoder: "libx265".to_string(),
             quality: 80.0,
             ..ExportProfile::default()
         };
@@ -354,7 +490,8 @@ mod tests {
             build_effective_command(Path::new("frames.ffconcat"), Path::new("out.mp4"), &profile)
                 .unwrap();
 
-        assert!(args.contains(&"libx264".to_string()));
+        assert!(args.contains(&"libx265".to_string()));
+        assert!(args.contains(&"hvc1".to_string()));
         assert!(args.contains(&"+faststart".to_string()));
         assert!(!args.contains(&"libwebp_anim".to_string()));
     }
@@ -388,6 +525,7 @@ mod tests {
         }];
         let profile = ExportProfile {
             format: ExportFormat::Mp4,
+            mp4_video_encoder: "libx265".to_string(),
             ..ExportProfile::default()
         };
         let output = dir.path().join("animation");
