@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-27 - Rework sizing around export-only output dimensions
+
+- Status: Done
+- Request: Remove edit-side frame resize, make export sizing the only resize mechanism, and strengthen the Export Size workflow for mixed-dimension projects.
+- Files inspected: `.ai/agent.md`, `.ai/task_tracker.md`, `src/types.rs`, `src/thumbnail.rs`, `src/export.rs`, `src/project.rs`, `src/app.rs`, `README.md`, `AGENTS.md`
+- Files changed: `.ai/task_tracker.md`, `src/types.rs`, `src/thumbnail.rs`, `src/export.rs`, `src/project.rs`, `src/app.rs`, `README.md`, `AGENTS.md`
+- Verification: `cargo fmt --all`, `cargo test`, `cargo build`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run >/tmp/awebpinator-export-only-size-smoke.log 2>&1`, `rg -n "panic|abort|Gtk-CRITICAL|GLib-GObject-CRITICAL|ERROR|thread '.*' panicked" /tmp/awebpinator-export-only-size-smoke.log || true`, `git diff --check`
+- Notes: Removed per-frame resize and edit-side fit handling from `TransformSpec`, while keeping backward-compatible project loading that accepts legacy `resize` and `fit_mode` keys but drops them on save. Export sizing is now resolved in one place across previews and real exports, including mixed-dimension `Original size` handling with `Largest Frame` and `Smallest Frame` reference modes. The Edit tab now exposes only rotate/flip/crop controls, while Export Size owns presets, custom width/height, aspect locking, inline fit mode, and the mixed-size reference chooser. Added unit coverage for export size resolution and legacy project loading. The bounded GTK startup run exited early with code `0` instead of timing out with `124`, but the captured log contained no panic, abort, or GTK critical output, so it was treated as inconclusive rather than a full startup-smoke pass.
+
 ### 2026-04-27 - Parallelize export frame preparation
 
 - Status: Done

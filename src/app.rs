@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::export::{
     build_command_preview, export_animation_with_progress, normalized_output_path_for_format,
+    resolved_export_size,
 };
 use crate::mp4::{known_mp4_encoder_label, normalized_mp4_encoder};
 use crate::preferences::{UiPreferences, load_ui_preferences, save_ui_preferences};
@@ -27,7 +28,7 @@ use crate::thumbnail::{
 use crate::timeline::Timeline;
 use crate::types::{
     CropRect, EncoderPreset, ExportFormat, ExportJob, ExportPreset, ExportProfile, FitMode,
-    FrameItem, ProjectDocument, ResizeTarget,
+    FrameItem, OriginalSizeReference, ProjectDocument, ResizeTarget,
 };
 use gtk::glib::clone;
 use gtk::prelude::*;
@@ -103,12 +104,6 @@ pub enum AppMsg {
     SetCropAnchor(CropAnchor),
     ApplyQuickCrop,
     ClearQuickCrop,
-    SetQuickResizePreset(DimensionPreset),
-    SetQuickResizeMode(QuickResizeMode),
-    SetQuickResizeMultiplier(f64),
-    SetQuickResizeCustomWidth(u32),
-    SetQuickResizeCustomHeight(u32),
-    ApplyQuickResize,
     RotateSelection(i32),
     ToggleSelectionFlip {
         horizontal: bool,
@@ -118,6 +113,8 @@ pub enum AppMsg {
     SetExportFormat(ExportFormat),
     SetMp4VideoEncoder(String),
     SetExportSizePreset(DimensionPreset),
+    SetExportOriginalSizeReference(OriginalSizeReference),
+    SetExportAspectLocked(bool),
     SetOutputPath(String),
     SetOutputWidth(u32),
     SetOutputHeight(u32),
@@ -173,8 +170,6 @@ pub struct InspectorValues {
     pub flip_horizontal: bool,
     pub flip_vertical: bool,
     pub crop: Option<CropRect>,
-    pub resize: Option<ResizeTarget>,
-    pub fit_mode: FitMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,21 +327,6 @@ impl DimensionPreset {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuickResizeMode {
-    Multiplier,
-    Custom,
-}
-
-impl QuickResizeMode {
-    fn stack_name(self) -> &'static str {
-        match self {
-            Self::Multiplier => "multiplier",
-            Self::Custom => "custom",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CropPreset {
     Square,
     Landscape16x9,
@@ -448,11 +428,10 @@ pub struct AppModel {
     loop_scope: LoopScope,
     crop_preset: CropPreset,
     crop_anchor: CropAnchor,
-    quick_resize_preset: DimensionPreset,
-    quick_resize_mode: QuickResizeMode,
-    quick_resize_multiplier: f64,
-    quick_resize_custom_width: u32,
-    quick_resize_custom_height: u32,
+    export_size_preset: DimensionPreset,
+    export_custom_width: u32,
+    export_custom_height: u32,
+    export_size_aspect_locked: bool,
     cache_dir: PathBuf,
     last_output_path: Option<PathBuf>,
     command_preview: String,
@@ -517,13 +496,11 @@ pub struct AppWidgets {
     clear_crop_button: gtk::Button,
     output_entry: gtk::Entry,
     suppress_output_entry_change: Rc<Cell<bool>>,
-    quick_resize_combo: gtk::ComboBoxText,
-    quick_resize_custom_panel: gtk::Box,
-    quick_resize_mode_stack: gtk::Stack,
-    quick_resize_multiplier_spin: gtk::SpinButton,
-    quick_resize_custom_width_spin: gtk::SpinButton,
-    quick_resize_custom_height_spin: gtk::SpinButton,
     export_size_combo: gtk::ComboBoxText,
+    export_size_custom_panel: gtk::Box,
+    export_original_size_panel: gtk::Box,
+    export_original_size_combo: gtk::ComboBoxText,
+    export_size_aspect_lock: gtk::CheckButton,
     export_format_combo: gtk::ComboBoxText,
     mp4_codec_combo: gtk::ComboBoxText,
     batch_duration_combo: gtk::ComboBoxText,
@@ -572,9 +549,6 @@ pub struct AppWidgets {
     crop_y: gtk::SpinButton,
     crop_w: gtk::SpinButton,
     crop_h: gtk::SpinButton,
-    resize_w: gtk::SpinButton,
-    resize_h: gtk::SpinButton,
-    inspector_fit_combo: gtk::ComboBoxText,
     timeline_render_signature: u64,
     mp4_codec_combo_signature: String,
     preview_picture_path: Option<PathBuf>,
@@ -639,11 +613,10 @@ impl Component for AppModel {
             loop_scope: LoopScope::Selected,
             crop_preset: CropPreset::Square,
             crop_anchor: CropAnchor::Center,
-            quick_resize_preset: DimensionPreset::Original,
-            quick_resize_mode: QuickResizeMode::Multiplier,
-            quick_resize_multiplier: 1.0,
-            quick_resize_custom_width: 0,
-            quick_resize_custom_height: 0,
+            export_size_preset: DimensionPreset::Original,
+            export_custom_width: 0,
+            export_custom_height: 0,
+            export_size_aspect_locked: true,
             cache_dir,
             last_output_path: None,
             command_preview: String::new(),
@@ -688,7 +661,7 @@ impl Component for AppModel {
         };
         model.sync_export_profile_to_diagnostics();
         model.recompute_command_preview();
-        model.sync_quick_resize_state_from_selection();
+        model.sync_export_size_state_from_profile();
 
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1023,115 +996,7 @@ impl Component for AppModel {
         crop_controls_box.append(&crop_anchor_row);
         crop_controls_box.append(&crop_action_row);
         crop_controls_box.append(&crop_summary_label);
-        let quick_resize_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .hexpand(true)
-            .build();
-        let quick_resize_combo = combo_for_dimension_preset();
-        set_accessible_label(&quick_resize_combo, "Quick resize preset");
-        quick_resize_combo.add_css_class("control-surface");
-        quick_resize_combo.set_hexpand(true);
-        quick_resize_combo.set_halign(gtk::Align::Fill);
-        let quick_apply_button =
-            build_labeled_button("Apply", "emblem-ok-symbolic", "icon-tone-green");
-        quick_apply_button.add_css_class("suggested-action");
-        quick_apply_button.set_halign(gtk::Align::End);
-        quick_resize_row.append(&quick_resize_combo);
-        quick_resize_row.append(&quick_apply_button);
-        let quick_resize_custom_panel = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .visible(false)
-            .build();
-        let quick_resize_mode_stack = gtk::Stack::builder()
-            .transition_type(gtk::StackTransitionType::SlideLeftRight)
-            .hexpand(true)
-            .build();
-        let quick_resize_mode_switcher = gtk::StackSwitcher::new();
-        quick_resize_mode_switcher.set_stack(Some(&quick_resize_mode_stack));
-        quick_resize_mode_switcher.set_halign(gtk::Align::Start);
-        quick_resize_custom_panel.append(&quick_resize_mode_switcher);
-
-        let multiplier_page = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .build();
-        let multiplier_row = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(8)
-            .build();
-        let multiplier_down_button =
-            build_icon_button("list-remove-symbolic", "Decrease resize multiplier by 1");
-        let quick_resize_multiplier_spin = gtk::SpinButton::with_range(0.1, 64.0, 1.0);
-        quick_resize_multiplier_spin.set_digits(2);
-        quick_resize_multiplier_spin.set_hexpand(true);
-        quick_resize_multiplier_spin.set_halign(gtk::Align::Fill);
-        quick_resize_multiplier_spin.add_css_class("control-surface");
-        set_accessible_label(&quick_resize_multiplier_spin, "Resize multiplier");
-        let multiplier_up_button =
-            build_icon_button("list-add-symbolic", "Increase resize multiplier by 1");
-        multiplier_row.append(&multiplier_down_button);
-        multiplier_row.append(&quick_resize_multiplier_spin);
-        multiplier_row.append(&multiplier_up_button);
-        multiplier_page.append(&helper_label(
-            "Scale the selected frame by a typed multiplier, or step it up and down in whole numbers.",
-        ));
-        multiplier_page.append(&multiplier_row);
-        quick_resize_mode_stack.add_titled(
-            &multiplier_page,
-            Some(QuickResizeMode::Multiplier.stack_name()),
-            "Multiplier",
-        );
-
-        let custom_page = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .build();
-        let custom_grid = gtk::Grid::builder()
-            .column_spacing(8)
-            .row_spacing(8)
-            .build();
-        let quick_resize_custom_width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
-        quick_resize_custom_width_spin.set_hexpand(true);
-        quick_resize_custom_width_spin.set_halign(gtk::Align::Fill);
-        quick_resize_custom_width_spin.add_css_class("control-surface");
-        set_accessible_label(&quick_resize_custom_width_spin, "Quick resize custom width");
-        let quick_resize_custom_height_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
-        quick_resize_custom_height_spin.set_hexpand(true);
-        quick_resize_custom_height_spin.set_halign(gtk::Align::Fill);
-        quick_resize_custom_height_spin.add_css_class("control-surface");
-        set_accessible_label(
-            &quick_resize_custom_height_spin,
-            "Quick resize custom height",
-        );
-        attach_labeled_spin(&custom_grid, "Width", &quick_resize_custom_width_spin, 0, 0);
-        attach_labeled_spin(
-            &custom_grid,
-            "Height",
-            &quick_resize_custom_height_spin,
-            1,
-            0,
-        );
-        custom_page.append(&helper_label(
-            "Enter either width or height and the other value updates to keep the selected frame's aspect ratio.",
-        ));
-        custom_page.append(&custom_grid);
-        quick_resize_mode_stack.add_titled(
-            &custom_page,
-            Some(QuickResizeMode::Custom.stack_name()),
-            "Custom",
-        );
-
-        quick_resize_custom_panel.append(&quick_resize_mode_stack);
-        let quick_resize_box = gtk::Box::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .spacing(8)
-            .build();
-        quick_resize_box.append(&quick_resize_row);
-        quick_resize_box.append(&quick_resize_custom_panel);
         edit_page.append(&section("Guided Crop", &crop_controls_box));
-        edit_page.append(&section("Resize", &quick_resize_box));
 
         let edit_advanced_box = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
@@ -1147,27 +1012,18 @@ impl Component for AppModel {
         let crop_y = gtk::SpinButton::with_range(0.0, 16384.0, 1.0);
         let crop_w = gtk::SpinButton::with_range(0.0, 16384.0, 1.0);
         let crop_h = gtk::SpinButton::with_range(0.0, 16384.0, 1.0);
-        let resize_w = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
-        let resize_h = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
-        let inspector_fit_combo = combo_for_fit_mode();
         set_accessible_label(&crop_x, "Crop X");
         set_accessible_label(&crop_y, "Crop Y");
         set_accessible_label(&crop_w, "Crop width");
         set_accessible_label(&crop_h, "Crop height");
-        set_accessible_label(&resize_w, "Resize width");
-        set_accessible_label(&resize_h, "Resize height");
-        set_accessible_label(&inspector_fit_combo, "Edit fit mode");
         let apply_transform_button = build_labeled_button(
             "Apply to Selected Frames",
             "emblem-ok-symbolic",
             "icon-tone-green",
         );
         apply_transform_button.add_css_class("suggested-action");
-        let clear_transform_button = build_labeled_button(
-            "Clear Crop/Resize",
-            "edit-clear-symbolic",
-            "icon-tone-coral",
-        );
+        let clear_transform_button =
+            build_labeled_button("Clear Crop", "edit-clear-symbolic", "icon-tone-coral");
 
         transform_grid.attach(&flip_h_check, 0, 1, 1, 1);
         transform_grid.attach(&flip_v_check, 1, 1, 1, 1);
@@ -1175,13 +1031,11 @@ impl Component for AppModel {
         attach_labeled_spin(&transform_grid, "Crop Y", &crop_y, 1, 2);
         attach_labeled_spin(&transform_grid, "Crop W", &crop_w, 0, 4);
         attach_labeled_spin(&transform_grid, "Crop H", &crop_h, 1, 4);
-        attach_labeled_spin(&transform_grid, "Resize W", &resize_w, 0, 6);
-        attach_labeled_spin(&transform_grid, "Resize H", &resize_h, 1, 6);
-        transform_grid.attach(&gtk::Label::new(Some("Fit mode")), 0, 8, 1, 1);
-        transform_grid.attach(&inspector_fit_combo, 1, 8, 1, 1);
-        transform_grid.attach(&apply_transform_button, 0, 9, 1, 1);
-        transform_grid.attach(&clear_transform_button, 1, 9, 1, 1);
-        edit_advanced_box.append(&helper_label("Advanced mode exposes direct crop, resize, fit, and flip controls for expert adjustments."));
+        transform_grid.attach(&apply_transform_button, 0, 6, 1, 1);
+        transform_grid.attach(&clear_transform_button, 1, 6, 1, 1);
+        edit_advanced_box.append(&helper_label(
+            "Advanced mode exposes direct crop and flip controls for expert adjustments.",
+        ));
         edit_advanced_box.append(&transform_grid);
         edit_page.append(&collapsible_section(
             "Advanced Edit Controls",
@@ -1488,6 +1342,11 @@ impl Component for AppModel {
         export_format_combo.add_css_class("control-surface");
         let export_size_combo = combo_for_dimension_preset();
         export_size_combo.add_css_class("control-surface");
+        let export_original_size_combo = combo_for_original_size_reference();
+        export_original_size_combo.add_css_class("control-surface");
+        let export_size_aspect_lock = gtk::CheckButton::with_label("Lock aspect ratio");
+        export_size_aspect_lock.set_active(true);
+        export_size_aspect_lock.add_css_class("control-surface");
         let mp4_codec_combo = gtk::ComboBoxText::new();
         mp4_codec_combo.add_css_class("control-surface");
         let width_spin = gtk::SpinButton::with_range(0.0, 8192.0, 1.0);
@@ -1503,6 +1362,8 @@ impl Component for AppModel {
         quality_spin.add_css_class("control-surface");
         set_accessible_label(&export_format_combo, "Export format");
         set_accessible_label(&export_size_combo, "Export size preset");
+        set_accessible_label(&export_original_size_combo, "Original size reference");
+        set_accessible_label(&export_size_aspect_lock, "Lock export aspect ratio");
         set_accessible_label(&mp4_codec_combo, "MP4 codec");
         set_accessible_label(&width_spin, "Export width");
         set_accessible_label(&height_spin, "Export height");
@@ -1546,6 +1407,47 @@ impl Component for AppModel {
         export_button.add_css_class("pill-button");
         output_row.append(&output_entry);
         output_row.append(&browse_output_button);
+        let export_size_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        export_size_box.append(&export_size_combo);
+        let export_original_size_panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .visible(false)
+            .build();
+        export_original_size_panel.append(&helper_label(
+            "Frames currently have different sizes. Choose which frame size defines the original export canvas.",
+        ));
+        export_original_size_panel.append(&export_original_size_combo);
+        export_size_box.append(&export_original_size_panel);
+        let export_size_custom_panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .visible(false)
+            .build();
+        let export_size_custom_grid = gtk::Grid::builder()
+            .column_spacing(8)
+            .row_spacing(8)
+            .build();
+        attach_labeled_spin(&export_size_custom_grid, "Width", &width_spin, 0, 0);
+        attach_labeled_spin(&export_size_custom_grid, "Height", &height_spin, 1, 0);
+        export_size_custom_panel.append(&helper_label(
+            "Custom export size always applies to every enabled frame.",
+        ));
+        export_size_custom_panel.append(&export_size_custom_grid);
+        export_size_custom_panel.append(&export_size_aspect_lock);
+        export_size_box.append(&export_size_custom_panel);
+        let fit_mode_row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .build();
+        fit_mode_row.append(&helper_label(
+            "Choose how frames fit inside the final export canvas.",
+        ));
+        fit_mode_row.append(&fit_mode_combo);
+        export_size_box.append(&fit_mode_row);
         let quality_row = gtk::Box::builder()
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
@@ -1565,8 +1467,8 @@ impl Component for AppModel {
         ));
         export_basic_box.append(&settings_row(
             "Export Size",
-            "Choose the size of your export.",
-            &export_size_combo,
+            "Choose one final canvas size for the whole export.",
+            &export_size_box,
         ));
         export_basic_box.append(&settings_row(
             "Quality",
@@ -1712,16 +1614,12 @@ impl Component for AppModel {
             .column_spacing(8)
             .row_spacing(8)
             .build();
-        attach_labeled_spin(&export_grid, "Width", &width_spin, 0, 0);
-        attach_labeled_spin(&export_grid, "Height", &height_spin, 1, 0);
-        export_grid.attach(&gtk::Label::new(Some("Encoder Preset")), 0, 2, 1, 1);
-        export_grid.attach(&encoder_combo, 1, 2, 1, 1);
-        attach_labeled_spin(&export_grid, "CR Threshold", &cr_threshold_spin, 0, 3);
-        attach_labeled_spin(&export_grid, "CR Size", &cr_size_spin, 1, 3);
-        export_grid.attach(&gtk::Label::new(Some("Export Fit Mode")), 0, 5, 1, 1);
-        export_grid.attach(&fit_mode_combo, 1, 5, 1, 1);
-        export_grid.attach(&gtk::Label::new(Some("Advanced ffmpeg args")), 0, 6, 1, 1);
-        export_grid.attach(&raw_args_entry, 0, 7, 2, 1);
+        export_grid.attach(&gtk::Label::new(Some("Encoder Preset")), 0, 0, 1, 1);
+        export_grid.attach(&encoder_combo, 1, 0, 1, 1);
+        attach_labeled_spin(&export_grid, "CR Threshold", &cr_threshold_spin, 0, 1);
+        attach_labeled_spin(&export_grid, "CR Size", &cr_size_spin, 1, 1);
+        export_grid.attach(&gtk::Label::new(Some("Advanced ffmpeg args")), 0, 3, 1, 1);
+        export_grid.attach(&raw_args_entry, 0, 4, 2, 1);
         let command_preview_label = gtk::Label::new(None);
         command_preview_label.set_xalign(0.0);
         command_preview_label.set_wrap(true);
@@ -2268,66 +2166,6 @@ impl Component for AppModel {
             sender,
             move |_| sender.input(AppMsg::ClearQuickCrop)
         ));
-        quick_resize_combo.connect_changed(clone!(
-            #[strong]
-            sender,
-            move |combo| {
-                sender.input(AppMsg::SetQuickResizePreset(dimension_preset_from_combo(
-                    combo,
-                )));
-            }
-        ));
-        quick_resize_mode_stack.connect_notify_local(
-            Some("visible-child-name"),
-            clone!(
-                #[strong]
-                sender,
-                move |stack, _| {
-                    let mode = match stack.visible_child_name().as_deref() {
-                        Some("custom") => QuickResizeMode::Custom,
-                        _ => QuickResizeMode::Multiplier,
-                    };
-                    sender.input(AppMsg::SetQuickResizeMode(mode));
-                }
-            ),
-        );
-        multiplier_down_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            #[strong]
-            quick_resize_multiplier_spin,
-            move |_| {
-                sender.input(AppMsg::SetQuickResizeMultiplier(
-                    quick_resize_multiplier_spin.value() - 1.0,
-                ));
-            }
-        ));
-        quick_resize_multiplier_spin.connect_value_changed(clone!(
-            #[strong]
-            sender,
-            move |spin| sender.input(AppMsg::SetQuickResizeMultiplier(spin.value()))
-        ));
-        multiplier_up_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            #[strong]
-            quick_resize_multiplier_spin,
-            move |_| {
-                sender.input(AppMsg::SetQuickResizeMultiplier(
-                    quick_resize_multiplier_spin.value() + 1.0,
-                ));
-            }
-        ));
-        quick_resize_custom_width_spin.connect_value_changed(clone!(
-            #[strong]
-            sender,
-            move |spin| sender.input(AppMsg::SetQuickResizeCustomWidth(spin.value() as u32))
-        ));
-        quick_resize_custom_height_spin.connect_value_changed(clone!(
-            #[strong]
-            sender,
-            move |spin| sender.input(AppMsg::SetQuickResizeCustomHeight(spin.value() as u32))
-        ));
         loop_repeats_spin.connect_value_changed(clone!(
             #[strong]
             sender,
@@ -2408,11 +2246,6 @@ impl Component for AppModel {
             sender,
             move |_| sender.input(AppMsg::RotateSelection(1))
         ));
-        quick_apply_button.connect_clicked(clone!(
-            #[strong]
-            sender,
-            move |_| sender.input(AppMsg::ApplyQuickResize)
-        ));
         apply_transform_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -2428,19 +2261,11 @@ impl Component for AppModel {
             crop_w,
             #[strong]
             crop_h,
-            #[strong]
-            resize_w,
-            #[strong]
-            resize_h,
-            #[strong]
-            inspector_fit_combo,
             move |_| {
                 sender.input(AppMsg::ApplyInspectorTransform(InspectorValues {
                     flip_horizontal: flip_h_check.is_active(),
                     flip_vertical: flip_v_check.is_active(),
                     crop: crop_from_widgets(&crop_x, &crop_y, &crop_w, &crop_h),
-                    resize: resize_from_widgets(&resize_w, &resize_h),
-                    fit_mode: fit_mode_from_combo(&inspector_fit_combo),
                 }));
             }
         ));
@@ -2456,10 +2281,6 @@ impl Component for AppModel {
             #[strong]
             crop_h,
             #[strong]
-            resize_w,
-            #[strong]
-            resize_h,
-            #[strong]
             flip_h_check,
             #[strong]
             flip_v_check,
@@ -2468,16 +2289,12 @@ impl Component for AppModel {
                 set_spin_if_needed(&crop_y, 0.0);
                 set_spin_if_needed(&crop_w, 0.0);
                 set_spin_if_needed(&crop_h, 0.0);
-                set_spin_if_needed(&resize_w, 0.0);
-                set_spin_if_needed(&resize_h, 0.0);
                 set_check_if_needed(&flip_h_check, false);
                 set_check_if_needed(&flip_v_check, false);
                 sender.input(AppMsg::ApplyInspectorTransform(InspectorValues {
                     flip_horizontal: false,
                     flip_vertical: false,
                     crop: None,
-                    resize: None,
-                    fit_mode: FitMode::Contain,
                 }));
             }
         ));
@@ -2534,6 +2351,20 @@ impl Component for AppModel {
                     sender.input(AppMsg::SetOutputPath(entry.text().to_string()));
                 }
             }
+        ));
+        export_original_size_combo.connect_changed(clone!(
+            #[strong]
+            sender,
+            move |combo| {
+                sender.input(AppMsg::SetExportOriginalSizeReference(
+                    original_size_reference_from_combo(combo),
+                ))
+            }
+        ));
+        export_size_aspect_lock.connect_toggled(clone!(
+            #[strong]
+            sender,
+            move |check| sender.input(AppMsg::SetExportAspectLocked(check.is_active()))
         ));
         width_spin.connect_value_changed(clone!(
             #[strong]
@@ -2667,13 +2498,11 @@ impl Component for AppModel {
             clear_crop_button,
             output_entry,
             suppress_output_entry_change,
-            quick_resize_combo,
-            quick_resize_custom_panel,
-            quick_resize_mode_stack,
-            quick_resize_multiplier_spin,
-            quick_resize_custom_width_spin,
-            quick_resize_custom_height_spin,
             export_size_combo,
+            export_size_custom_panel,
+            export_original_size_panel,
+            export_original_size_combo,
+            export_size_aspect_lock,
             export_format_combo,
             mp4_codec_combo,
             batch_duration_combo,
@@ -2722,9 +2551,6 @@ impl Component for AppModel {
             crop_y,
             crop_w,
             crop_h,
-            resize_w,
-            resize_h,
-            inspector_fit_combo,
             timeline_render_signature: 0,
             mp4_codec_combo_signature: String::new(),
             preview_picture_path: None,
@@ -2840,7 +2666,6 @@ impl Component for AppModel {
                 );
                 self.selection = next.selection;
                 self.selection_anchor_id = next.anchor_id;
-                self.sync_quick_resize_state_from_selection();
                 self.queue_preview_for_primary_selection(&sender);
             }
             AppMsg::ToggleEnabled(id, enabled) => {
@@ -2894,7 +2719,6 @@ impl Component for AppModel {
                 let inserted = self.timeline.duplicate_selected(&self.selection);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
-                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Duplicated {} frame(s).", inserted.len()),
@@ -2922,7 +2746,6 @@ impl Component for AppModel {
                     .paste_after_selection(&self.selection, &self.clipboard);
                 self.selection = inserted.iter().copied().collect();
                 self.selection_anchor_id = inserted.first().copied();
-                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Loop,
                     format!("Pasted {} frame(s).", inserted.len()),
@@ -2969,7 +2792,6 @@ impl Component for AppModel {
                             self.selection = result.inserted_ids.iter().copied().collect();
                             self.selection_anchor_id = result.inserted_ids.first().copied();
                         }
-                        self.sync_quick_resize_state_from_selection();
                         self.set_status(
                             FooterStatusScope::Loop,
                             if result.inserted_ids.is_empty() {
@@ -2999,72 +2821,10 @@ impl Component for AppModel {
             AppMsg::ClearQuickCrop => {
                 self.clear_quick_crop(&sender);
             }
-            AppMsg::SetQuickResizePreset(preset) => {
-                self.quick_resize_preset = preset;
-                if preset == DimensionPreset::Custom
-                    && (self.quick_resize_custom_width == 0 || self.quick_resize_custom_height == 0)
-                {
-                    self.seed_quick_resize_custom_dimensions();
-                }
-            }
-            AppMsg::SetQuickResizeMode(mode) => {
-                self.quick_resize_mode = mode;
-            }
-            AppMsg::SetQuickResizeMultiplier(value) => {
-                self.quick_resize_multiplier = value.clamp(0.1, 64.0);
-            }
-            AppMsg::SetQuickResizeCustomWidth(width) => {
-                let height = self
-                    .linked_resize_height_for_width(width)
-                    .unwrap_or(self.quick_resize_custom_height);
-                self.quick_resize_custom_width = width;
-                self.quick_resize_custom_height = height;
-            }
-            AppMsg::SetQuickResizeCustomHeight(height) => {
-                let width = self
-                    .linked_resize_width_for_height(height)
-                    .unwrap_or(self.quick_resize_custom_width);
-                self.quick_resize_custom_height = height;
-                self.quick_resize_custom_width = width;
-            }
-            AppMsg::ApplyQuickResize => {
-                if self.timeline.is_empty() {
-                    self.set_status(FooterStatusScope::Edit, "Import frames before resizing.");
-                } else if let Some(target) = self.quick_resize_target() {
-                    self.apply_to_all_frames(|frame| {
-                        frame.transform_spec.resize = Some(target);
-                    });
-                    self.sync_quick_resize_state_from_selection();
-                    self.set_status(
-                        FooterStatusScope::Edit,
-                        format!(
-                            "Applied resize target {} x {} to all frames.",
-                            target.width, target.height
-                        ),
-                    );
-                    self.refresh_all_frame_jobs(&sender);
-                } else if self.quick_resize_preset == DimensionPreset::Original {
-                    self.apply_to_all_frames(|frame| {
-                        frame.transform_spec.resize = None;
-                    });
-                    self.sync_quick_resize_state_from_selection();
-                    self.set_status(
-                        FooterStatusScope::Edit,
-                        "Reset all frames to their original size.",
-                    );
-                    self.refresh_all_frame_jobs(&sender);
-                } else {
-                    self.set_status(
-                        FooterStatusScope::Edit,
-                        "Enter a valid multiplier or linked custom size before resizing all frames.",
-                    );
-                }
-            }
             AppMsg::RotateSelection(delta) => {
                 self.apply_to_selection(|frame| {
                     frame.transform_spec.rotate_quarter_turns += delta;
                 });
-                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Edit,
                     "Updated rotation for selected frames.",
@@ -3080,7 +2840,6 @@ impl Component for AppModel {
                         frame.transform_spec.flip_vertical = !frame.transform_spec.flip_vertical;
                     }
                 });
-                self.sync_quick_resize_state_from_selection();
                 let status = if horizontal {
                     "Updated horizontal flip for selected frames.".to_string()
                 } else {
@@ -3094,10 +2853,7 @@ impl Component for AppModel {
                     frame.transform_spec.flip_horizontal = values.flip_horizontal;
                     frame.transform_spec.flip_vertical = values.flip_vertical;
                     frame.transform_spec.crop = values.crop;
-                    frame.transform_spec.resize = values.resize;
-                    frame.transform_spec.fit_mode = values.fit_mode;
                 });
-                self.sync_quick_resize_state_from_selection();
                 self.set_status(
                     FooterStatusScope::Edit,
                     "Applied edit values to selected frames.",
@@ -3123,43 +2879,28 @@ impl Component for AppModel {
                 self.export_profile.mp4_video_encoder = encoder;
                 self.recompute_command_preview();
             }
-            AppMsg::SetExportSizePreset(preset) => match preset {
-                DimensionPreset::Original => {
-                    self.export_profile.output_width = None;
-                    self.export_profile.output_height = None;
+            AppMsg::SetExportSizePreset(preset) => {
+                self.export_size_preset = preset;
+                self.apply_export_size_preset(preset);
+            }
+            AppMsg::SetExportOriginalSizeReference(reference) => {
+                self.export_profile.original_size_reference = reference;
+                if self.export_size_preset == DimensionPreset::Original {
                     self.invalidate_export_preview();
                 }
-                DimensionPreset::Hd1080 => {
-                    self.export_profile.output_width = Some(1920);
-                    self.export_profile.output_height = Some(1080);
-                    self.invalidate_export_preview();
-                }
-                DimensionPreset::Hd720 => {
-                    self.export_profile.output_width = Some(1280);
-                    self.export_profile.output_height = Some(720);
-                    self.invalidate_export_preview();
-                }
-                DimensionPreset::Custom => {
-                    let (width, height) = self
-                        .preferred_export_custom_dimensions()
-                        .unwrap_or((1280, 720));
-                    self.export_profile.output_width = Some(width);
-                    self.export_profile.output_height = Some(height);
-                    self.invalidate_export_preview();
-                    let _ = self.set_advanced_mode(true);
-                }
-            },
+            }
+            AppMsg::SetExportAspectLocked(locked) => {
+                self.export_size_aspect_locked = locked;
+            }
             AppMsg::SetOutputPath(path) => {
                 self.last_output_path =
                     (!path.trim().is_empty()).then_some(PathBuf::from(path.trim()));
             }
             AppMsg::SetOutputWidth(width) => {
-                self.export_profile.output_width = if width == 0 { None } else { Some(width) };
-                self.invalidate_export_preview();
+                self.update_export_custom_width(width);
             }
             AppMsg::SetOutputHeight(height) => {
-                self.export_profile.output_height = if height == 0 { None } else { Some(height) };
-                self.invalidate_export_preview();
+                self.update_export_custom_height(height);
             }
             AppMsg::SetQuality(quality) => self.export_profile.quality = quality.clamp(0.0, 100.0),
             AppMsg::SetLossless(lossless) => self.export_profile.lossless = lossless,
@@ -3736,30 +3477,25 @@ impl Component for AppModel {
             &mut widgets.mp4_codec_combo_signature,
         );
         sync_combo_active_fit_mode(&widgets.fit_mode_combo, self.export_profile.fit_mode);
-        sync_combo_active_dimension_preset(&widgets.quick_resize_combo, self.quick_resize_preset);
+        sync_combo_active_dimension_preset(&widgets.export_size_combo, self.export_size_preset);
         set_visible_if_needed(
-            &widgets.quick_resize_custom_panel,
-            self.quick_resize_preset == DimensionPreset::Custom,
+            &widgets.export_size_custom_panel,
+            self.export_size_preset == DimensionPreset::Custom,
         );
-        set_stack_visible_child_name_if_needed(
-            &widgets.quick_resize_mode_stack,
-            self.quick_resize_mode.stack_name(),
+        set_spin_if_needed(&widgets.width_spin, self.export_custom_width as f64);
+        set_spin_if_needed(&widgets.height_spin, self.export_custom_height as f64);
+        sync_combo_active_original_size_reference(
+            &widgets.export_original_size_combo,
+            self.export_profile.original_size_reference,
         );
-        set_spin_if_needed(
-            &widgets.quick_resize_multiplier_spin,
-            self.quick_resize_multiplier,
+        set_check_if_needed(
+            &widgets.export_size_aspect_lock,
+            self.export_size_aspect_locked,
         );
-        set_spin_if_needed(
-            &widgets.quick_resize_custom_width_spin,
-            self.quick_resize_custom_width as f64,
-        );
-        set_spin_if_needed(
-            &widgets.quick_resize_custom_height_spin,
-            self.quick_resize_custom_height as f64,
-        );
-        sync_combo_active_dimension_preset(
-            &widgets.export_size_combo,
-            export_dimension_preset(&self.export_profile),
+        set_visible_if_needed(
+            &widgets.export_original_size_panel,
+            self.export_size_preset == DimensionPreset::Original
+                && self.has_mixed_original_export_dimensions(),
         );
         sync_combo_active_batch_duration_preset(
             &widgets.batch_duration_combo,
@@ -3791,14 +3527,6 @@ impl Component for AppModel {
         );
         set_scale_if_needed(&widgets.quality_scale, self.export_profile.quality as f64);
         set_spin_if_needed(&widgets.quality_spin, self.export_profile.quality as f64);
-        set_spin_if_needed(
-            &widgets.width_spin,
-            self.export_profile.output_width.unwrap_or_default() as f64,
-        );
-        set_spin_if_needed(
-            &widgets.height_spin,
-            self.export_profile.output_height.unwrap_or_default() as f64,
-        );
         set_check_if_needed(&widgets.lossless_check, self.export_profile.lossless);
         let webp_format_active = self.export_profile.format == ExportFormat::WebP;
         let mp4_format_active = self.export_profile.format == ExportFormat::Mp4;
@@ -3994,15 +3722,6 @@ impl AppModel {
         if let Some(crop) = frame.transform_spec.crop {
             edits.push(format!("crop {} x {}", crop.width, crop.height));
         }
-        if let Some(resize) = frame.transform_spec.resize {
-            edits.push(format!("resize {} x {}", resize.width, resize.height));
-            if frame.transform_spec.fit_mode != FitMode::Contain {
-                edits.push(format!(
-                    "fit {}",
-                    frame.transform_spec.fit_mode.as_str().to_ascii_lowercase()
-                ));
-            }
-        }
         let rotation = frame.transform_spec.rotate_quarter_turns.rem_euclid(4);
         if rotation != 0 {
             edits.push(format!("rotate {}°", rotation * 90));
@@ -4112,7 +3831,8 @@ impl AppModel {
         };
         self.selection = imported_ids.iter().copied().collect();
         self.selection_anchor_id = imported_ids.first().copied();
-        self.sync_quick_resize_state_from_selection();
+        self.sync_export_size_state_from_profile();
+        self.invalidate_export_preview();
         self.set_status(
             FooterStatusScope::Organize,
             format!(
@@ -4176,7 +3896,6 @@ impl AppModel {
         self.selection.clear();
         self.selection.insert(frame_id);
         self.selection_anchor_id = Some(frame_id);
-        self.sync_quick_resize_state_from_selection();
         self.queue_preview_for_primary_selection(sender);
     }
 
@@ -4192,7 +3911,6 @@ impl AppModel {
             self.preview_frame_id = None;
             self.invalidate_export_preview();
         }
-        self.sync_quick_resize_state_from_selection();
         self.queue_preview_for_primary_selection(sender);
     }
 
@@ -4203,7 +3921,6 @@ impl AppModel {
         self.preview_path = None;
         self.preview_frame_id = None;
         self.invalidate_export_preview();
-        self.sync_quick_resize_state_from_selection();
         self.set_status(FooterStatusScope::Global, "Cleared timeline selection.");
     }
 
@@ -4394,7 +4111,7 @@ impl AppModel {
         self.preview_frame_id = None;
         self.preview_rendered_size = None;
         self.invalidate_export_preview();
-        self.sync_quick_resize_state_from_selection();
+        self.sync_export_size_state_from_profile();
         ids
     }
 
@@ -4447,13 +4164,6 @@ impl AppModel {
     fn refresh_selection_jobs(&mut self, sender: &ComponentSender<Self>) {
         let ids: Vec<_> = self.selection.iter().copied().collect();
         self.refresh_frame_jobs(ids, sender);
-        self.queue_preview_for_primary_selection(sender);
-    }
-
-    fn refresh_all_frame_jobs(&mut self, sender: &ComponentSender<Self>) {
-        let ids = self.timeline_frame_ids();
-        self.refresh_frame_jobs(ids, sender);
-        self.preview_rendered_size = None;
         self.queue_preview_for_primary_selection(sender);
     }
 
@@ -4599,12 +4309,6 @@ impl AppModel {
         }
     }
 
-    fn apply_to_all_frames(&mut self, mut apply: impl FnMut(&mut FrameItem)) {
-        for frame in self.timeline.frames_mut() {
-            apply(frame);
-        }
-    }
-
     fn apply_quick_crop(&mut self, sender: &ComponentSender<Self>) {
         if self.selection.is_empty() {
             self.set_status(
@@ -4652,7 +4356,6 @@ impl AppModel {
                 skipped
             )
         };
-        self.sync_quick_resize_state_from_selection();
         self.set_status(FooterStatusScope::Edit, status);
         self.refresh_selection_jobs(sender);
     }
@@ -4681,7 +4384,6 @@ impl AppModel {
             return;
         }
 
-        self.sync_quick_resize_state_from_selection();
         self.set_status(
             FooterStatusScope::Edit,
             format!("Cleared crop from {} frame(s).", cleared),
@@ -4703,26 +4405,22 @@ impl AppModel {
     }
 
     fn export_preview_target(&self) -> Option<ResizeTarget> {
-        match (
-            self.export_profile.output_width,
-            self.export_profile.output_height,
-        ) {
-            (Some(width), Some(height)) if width > 0 && height > 0 => {
-                Some(ResizeTarget { width, height })
-            }
-            _ => None,
-        }
+        self.resolved_export_size()
     }
 
     fn export_dimensions_text(&self) -> String {
         self.export_preview_target()
-            .map(|resize| format!("{} x {}", resize.width, resize.height))
-            .or_else(|| {
-                self.timeline
-                    .frames()
-                    .iter()
-                    .find_map(frame_effective_dimensions)
-                    .map(|(width, height)| format!("{width} x {height}"))
+            .map(|resize| {
+                if self.export_size_preset == DimensionPreset::Original
+                    && self.has_mixed_original_export_dimensions()
+                {
+                    format!(
+                        "{} x {} ({})",
+                        resize.width, resize.height, self.export_profile.original_size_reference
+                    )
+                } else {
+                    format!("{} x {}", resize.width, resize.height)
+                }
             })
             .unwrap_or_else(|| "Original size".to_string())
     }
@@ -4842,12 +4540,6 @@ impl AppModel {
                 .crop
                 .map(|crop| (crop.x, crop.y, crop.width, crop.height))
                 .hash(&mut hasher);
-            frame
-                .transform_spec
-                .resize
-                .map(|resize| (resize.width, resize.height))
-                .hash(&mut hasher);
-            frame.transform_spec.fit_mode.as_str().hash(&mut hasher);
             frame
                 .thumbnail_path
                 .as_deref()
@@ -5068,11 +4760,8 @@ impl AppModel {
         if frame_count == 0 {
             return "--".to_string();
         }
-        let dimensions_factor = match (
-            self.export_profile.output_width,
-            self.export_profile.output_height,
-        ) {
-            (Some(width), Some(height)) => {
+        let dimensions_factor = match self.resolved_export_size() {
+            Some(ResizeTarget { width, height }) => {
                 (u64::from(width) * u64::from(height)) as f64 / 921_600.0
             }
             _ => 1.0,
@@ -5118,94 +4807,138 @@ impl AppModel {
         }
     }
 
-    fn selection_dimension_preset(&self) -> DimensionPreset {
-        match self
-            .primary_selected_frame()
-            .or_else(|| self.timeline.frames().first())
-            .and_then(|frame| frame.transform_spec.resize)
-        {
-            None => DimensionPreset::Original,
-            Some(ResizeTarget {
-                width: 1920,
-                height: 1080,
-            }) => DimensionPreset::Hd1080,
-            Some(ResizeTarget {
-                width: 1280,
-                height: 720,
-            }) => DimensionPreset::Hd720,
-            Some(_) => DimensionPreset::Custom,
+    fn sync_export_size_state_from_profile(&mut self) {
+        self.export_size_preset = export_dimension_preset(&self.export_profile);
+        let (width, height) = match (
+            self.export_profile.output_width,
+            self.export_profile.output_height,
+        ) {
+            (Some(width), Some(height)) if width > 0 && height > 0 => (width, height),
+            _ => self.export_reference_dimensions().unwrap_or((1280, 720)),
+        };
+        self.export_custom_width = width;
+        self.export_custom_height = height;
+    }
+
+    fn export_reference_dimensions(&self) -> Option<(u32, u32)> {
+        match self.export_size_preset {
+            DimensionPreset::Original => self
+                .resolved_export_size()
+                .map(|target| (target.width, target.height)),
+            DimensionPreset::Hd1080 => Some((1920, 1080)),
+            DimensionPreset::Hd720 => Some((1280, 720)),
+            DimensionPreset::Custom => {
+                match (self.export_custom_width, self.export_custom_height) {
+                    (width, height) if width > 0 && height > 0 => Some((width, height)),
+                    _ => self
+                        .resolved_export_size()
+                        .map(|target| (target.width, target.height)),
+                }
+            }
         }
     }
 
-    fn sync_quick_resize_state_from_selection(&mut self) {
-        self.quick_resize_preset = self.selection_dimension_preset();
-        self.quick_resize_multiplier = 1.0;
-        self.seed_quick_resize_custom_dimensions();
+    fn resolved_export_size(&self) -> Option<ResizeTarget> {
+        resolved_export_size(self.timeline.frames(), &self.export_profile)
     }
 
-    fn seed_quick_resize_custom_dimensions(&mut self) {
-        let (width, height) = self.quick_resize_reference_dimensions().unwrap_or((0, 0));
-        self.quick_resize_custom_width = width;
-        self.quick_resize_custom_height = height;
+    fn has_mixed_original_export_dimensions(&self) -> bool {
+        let mut dimensions = self
+            .timeline
+            .frames()
+            .iter()
+            .filter(|frame| frame.enabled)
+            .filter_map(frame_effective_dimensions);
+        let Some(first) = dimensions.next() else {
+            return false;
+        };
+        dimensions.any(|value| value != first)
     }
 
-    fn quick_resize_reference_dimensions(&self) -> Option<(u32, u32)> {
-        self.primary_selected_frame()
-            .or_else(|| self.timeline.frames().first())
-            .and_then(frame_effective_dimensions)
-    }
-
-    fn linked_resize_height_for_width(&self, width: u32) -> Option<u32> {
+    fn linked_export_height_for_width(&self, width: u32) -> Option<u32> {
         if width == 0 {
             return Some(0);
         }
-        let (base_width, base_height) = self.quick_resize_reference_dimensions()?;
+        let (base_width, base_height) = self.export_reference_dimensions()?;
         scale_dimension_by_ratio(width, base_height, base_width)
     }
 
-    fn linked_resize_width_for_height(&self, height: u32) -> Option<u32> {
+    fn linked_export_width_for_height(&self, height: u32) -> Option<u32> {
         if height == 0 {
             return Some(0);
         }
-        let (base_width, base_height) = self.quick_resize_reference_dimensions()?;
+        let (base_width, base_height) = self.export_reference_dimensions()?;
         scale_dimension_by_ratio(height, base_width, base_height)
     }
 
-    fn quick_resize_target(&self) -> Option<ResizeTarget> {
-        match self.quick_resize_preset {
-            DimensionPreset::Original => None,
-            DimensionPreset::Hd1080 => Some(ResizeTarget {
-                width: 1920,
-                height: 1080,
-            }),
-            DimensionPreset::Hd720 => Some(ResizeTarget {
-                width: 1280,
-                height: 720,
-            }),
-            DimensionPreset::Custom => match self.quick_resize_mode {
-                QuickResizeMode::Multiplier => {
-                    let (base_width, base_height) = self.quick_resize_reference_dimensions()?;
-                    let multiplier = self.quick_resize_multiplier.max(0.1);
-                    Some(ResizeTarget {
-                        width: scaled_resize_dimension(base_width, multiplier),
-                        height: scaled_resize_dimension(base_height, multiplier),
-                    })
+    fn apply_export_size_preset(&mut self, preset: DimensionPreset) {
+        match preset {
+            DimensionPreset::Original => {
+                self.export_profile.output_width = None;
+                self.export_profile.output_height = None;
+            }
+            DimensionPreset::Hd1080 => {
+                self.export_profile.output_width = Some(1920);
+                self.export_profile.output_height = Some(1080);
+            }
+            DimensionPreset::Hd720 => {
+                self.export_profile.output_width = Some(1280);
+                self.export_profile.output_height = Some(720);
+            }
+            DimensionPreset::Custom => {
+                if self.export_custom_width == 0 || self.export_custom_height == 0 {
+                    let (width, height) = self.export_reference_dimensions().unwrap_or((1280, 720));
+                    self.export_custom_width = width;
+                    self.export_custom_height = height;
                 }
-                QuickResizeMode::Custom => {
-                    let width = self.quick_resize_custom_width;
-                    let height = self.quick_resize_custom_height;
-                    (width > 0 && height > 0).then_some(ResizeTarget { width, height })
-                }
-            },
+                self.export_profile.output_width = Some(self.export_custom_width);
+                self.export_profile.output_height = Some(self.export_custom_height);
+            }
+        }
+        self.invalidate_export_preview();
+    }
+
+    fn update_export_custom_width(&mut self, width: u32) {
+        self.export_custom_width = width;
+        if self.export_size_aspect_locked {
+            self.export_custom_height = self
+                .linked_export_height_for_width(width)
+                .unwrap_or(self.export_custom_height);
+        }
+        if self.export_size_preset == DimensionPreset::Custom {
+            self.export_profile.output_width = if self.export_custom_width == 0 {
+                None
+            } else {
+                Some(self.export_custom_width)
+            };
+            self.export_profile.output_height = if self.export_custom_height == 0 {
+                None
+            } else {
+                Some(self.export_custom_height)
+            };
+            self.invalidate_export_preview();
         }
     }
 
-    fn preferred_export_custom_dimensions(&self) -> Option<(u32, u32)> {
-        if self.quick_resize_preset == DimensionPreset::Custom {
-            self.quick_resize_target()
-                .map(|target| (target.width, target.height))
-        } else {
-            None
+    fn update_export_custom_height(&mut self, height: u32) {
+        self.export_custom_height = height;
+        if self.export_size_aspect_locked {
+            self.export_custom_width = self
+                .linked_export_width_for_height(height)
+                .unwrap_or(self.export_custom_width);
+        }
+        if self.export_size_preset == DimensionPreset::Custom {
+            self.export_profile.output_width = if self.export_custom_width == 0 {
+                None
+            } else {
+                Some(self.export_custom_width)
+            };
+            self.export_profile.output_height = if self.export_custom_height == 0 {
+                None
+            } else {
+                Some(self.export_custom_height)
+            };
+            self.invalidate_export_preview();
         }
     }
 
@@ -5248,21 +4981,14 @@ impl AppModel {
             .crop
             .map(|crop| format!("crop {}x{}+{},{}", crop.width, crop.height, crop.x, crop.y))
             .unwrap_or_else(|| "no crop".to_string());
-        let resize = frame
-            .transform_spec
-            .resize
-            .map(|resize| format!("resize {}x{}", resize.width, resize.height))
-            .unwrap_or_else(|| "no resize".to_string());
         format!(
-            "{}\n{} | current {} | {} ms | rotate {} quarter-turns\n{} | {} | fit {} | flip h:{} v:{}",
+            "{}\n{} | current {} | {} ms | rotate {} quarter-turns\n{} | flip h:{} v:{}",
             frame.file_name(),
             source_dims,
             effective_dims,
             frame.duration_ms,
             frame.transform_spec.rotate_quarter_turns.rem_euclid(4),
             crop,
-            resize,
-            frame.transform_spec.fit_mode,
             frame.transform_spec.flip_horizontal,
             frame.transform_spec.flip_vertical
         )
@@ -5291,9 +5017,6 @@ impl AppModel {
             set_spin_if_needed(&widgets.crop_y, 0.0);
             set_spin_if_needed(&widgets.crop_w, 0.0);
             set_spin_if_needed(&widgets.crop_h, 0.0);
-            set_spin_if_needed(&widgets.resize_w, 0.0);
-            set_spin_if_needed(&widgets.resize_h, 0.0);
-            sync_combo_active_fit_mode(&widgets.inspector_fit_combo, FitMode::Contain);
             return;
         };
         set_check_if_needed(&widgets.flip_h_check, frame.transform_spec.flip_horizontal);
@@ -5308,13 +5031,6 @@ impl AppModel {
         set_spin_if_needed(&widgets.crop_y, crop.y as f64);
         set_spin_if_needed(&widgets.crop_w, crop.width as f64);
         set_spin_if_needed(&widgets.crop_h, crop.height as f64);
-        let resize = frame.transform_spec.resize.unwrap_or(ResizeTarget {
-            width: 0,
-            height: 0,
-        });
-        set_spin_if_needed(&widgets.resize_w, resize.width as f64);
-        set_spin_if_needed(&widgets.resize_h, resize.height as f64);
-        sync_combo_active_fit_mode(&widgets.inspector_fit_combo, frame.transform_spec.fit_mode);
     }
 }
 
@@ -5495,6 +5211,17 @@ fn combo_for_dimension_preset() -> gtk::ComboBoxText {
     combo
 }
 
+fn combo_for_original_size_reference() -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    combo.set_hexpand(true);
+    combo.set_halign(gtk::Align::Fill);
+    for reference in OriginalSizeReference::ALL {
+        combo.append_text(reference.as_str());
+    }
+    combo.set_active(Some(0));
+    combo
+}
+
 fn combo_for_export_format() -> gtk::ComboBoxText {
     let combo = gtk::ComboBoxText::new();
     combo.set_hexpand(true);
@@ -5550,6 +5277,13 @@ fn dimension_preset_from_combo(combo: &gtk::ComboBoxText) -> DimensionPreset {
         Some("720p") => DimensionPreset::Hd720,
         Some("Custom") => DimensionPreset::Custom,
         _ => DimensionPreset::Original,
+    }
+}
+
+fn original_size_reference_from_combo(combo: &gtk::ComboBoxText) -> OriginalSizeReference {
+    match combo.active_text().as_deref() {
+        Some("Smallest Frame") => OriginalSizeReference::SmallestFrame,
+        _ => OriginalSizeReference::LargestFrame,
     }
 }
 
@@ -5613,6 +5347,19 @@ fn sync_combo_active_dimension_preset(combo: &gtk::ComboBoxText, preset: Dimensi
         DimensionPreset::Hd1080 => 1,
         DimensionPreset::Hd720 => 2,
         DimensionPreset::Custom => 3,
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
+}
+
+fn sync_combo_active_original_size_reference(
+    combo: &gtk::ComboBoxText,
+    reference: OriginalSizeReference,
+) {
+    let target = match reference {
+        OriginalSizeReference::LargestFrame => 0,
+        OriginalSizeReference::SmallestFrame => 1,
     };
     if combo.active() != Some(target) {
         combo.set_active(Some(target));
@@ -6350,8 +6097,8 @@ fn timeline_tile_picture_size(frame: &FrameItem) -> (i32, i32) {
 
     let aspect_ratio = frame
         .transform_spec
-        .resize
-        .map(|resize| (resize.width, resize.height))
+        .crop
+        .map(|crop| (crop.width, crop.height))
         .or_else(|| frame_effective_dimensions(frame))
         .or(frame.source_dimensions)
         .filter(|(_, height)| *height > 0)
@@ -7078,33 +6825,17 @@ fn crop_from_widgets(
     }
 }
 
-fn resize_from_widgets(
-    resize_w: &gtk::SpinButton,
-    resize_h: &gtk::SpinButton,
-) -> Option<ResizeTarget> {
-    match (resize_w.value() as u32, resize_h.value() as u32) {
-        (0, 0) => None,
-        (width, height) if width > 0 && height > 0 => Some(ResizeTarget { width, height }),
-        _ => None,
-    }
-}
-
 fn frame_effective_dimensions(frame: &FrameItem) -> Option<(u32, u32)> {
     let rotated = rotated_dimensions(
         frame.source_dimensions?,
         frame.transform_spec.rotate_quarter_turns,
     );
-    let cropped = frame
-        .transform_spec
-        .crop
-        .map(|crop| (crop.width, crop.height))
-        .unwrap_or(rotated);
     Some(
         frame
             .transform_spec
-            .resize
-            .map(|resize| (resize.width, resize.height))
-            .unwrap_or(cropped),
+            .crop
+            .map(|crop| (crop.width, crop.height))
+            .unwrap_or(rotated),
     )
 }
 
@@ -7115,10 +6846,6 @@ fn scale_dimension_by_ratio(value: u32, numerator: u32, denominator: u32) -> Opt
     let scaled = ((u128::from(value) * u128::from(numerator)) + (u128::from(denominator) / 2))
         / u128::from(denominator);
     Some(scaled.clamp(1, 8192) as u32)
-}
-
-fn scaled_resize_dimension(base: u32, multiplier: f64) -> u32 {
-    ((f64::from(base.max(1)) * multiplier).round() as u32).clamp(1, 8192)
 }
 
 fn crop_rect_for_frame(
@@ -7726,10 +7453,10 @@ mod tests {
         following_frame_id, frame_effective_dimensions, immediate_preview_path,
         playback_start_frame_id, preview_render_size_for_dimensions,
         preview_render_size_from_values, preview_result_is_usable, resolved_primary_selected_id,
-        scale_dimension_by_ratio, scaled_resize_dimension, should_refresh_preview, step_frame_id,
+        scale_dimension_by_ratio, should_refresh_preview, step_frame_id,
         timeline_tile_picture_size, timeline_visible_scroll_value, usable_preview_path,
     };
-    use crate::types::{CropRect, FitMode, FrameItem, ResizeTarget, TransformSpec};
+    use crate::types::{CropRect, FrameItem, TransformSpec};
     use std::collections::BTreeSet;
 
     #[test]
@@ -7865,8 +7592,6 @@ mod tests {
                 flip_horizontal: false,
                 flip_vertical: false,
                 crop: None,
-                resize: None,
-                fit_mode: FitMode::Contain,
             },
             thumbnail_path: Some(PathBuf::from("thumb.png")),
             enabled: true,
@@ -7990,8 +7715,6 @@ mod tests {
                 flip_horizontal: false,
                 flip_vertical: false,
                 crop: None,
-                resize: None,
-                fit_mode: FitMode::Contain,
             },
             thumbnail_path: Some(PathBuf::from("thumb.png")),
             enabled: true,
@@ -8020,8 +7743,6 @@ mod tests {
                 flip_horizontal: false,
                 flip_vertical: false,
                 crop: None,
-                resize: None,
-                fit_mode: FitMode::Contain,
             },
             thumbnail_path: None,
             enabled: true,
@@ -8166,7 +7887,7 @@ mod tests {
     }
 
     #[test]
-    fn frame_effective_dimensions_follow_rotation_crop_and_resize() {
+    fn frame_effective_dimensions_follow_rotation_and_crop() {
         let frame = FrameItem {
             id: 1,
             source_path: PathBuf::from("source.png"),
@@ -8181,24 +7902,18 @@ mod tests {
                     width: 900,
                     height: 600,
                 }),
-                resize: Some(ResizeTarget {
-                    width: 450,
-                    height: 300,
-                }),
-                fit_mode: FitMode::Contain,
             },
             thumbnail_path: None,
             enabled: true,
             source_dimensions: Some((1920, 1080)),
         };
 
-        assert_eq!(frame_effective_dimensions(&frame), Some((450, 300)));
+        assert_eq!(frame_effective_dimensions(&frame), Some((900, 600)));
     }
 
     #[test]
-    fn resize_scaling_helpers_preserve_aspect_ratio() {
+    fn aspect_ratio_scaling_helper_preserves_aspect_ratio() {
         assert_eq!(scale_dimension_by_ratio(400, 9, 16), Some(225));
-        assert_eq!(scaled_resize_dimension(960, 1.5), 1440);
     }
 
     #[test]
@@ -8225,7 +7940,9 @@ mod tests {
             source_path: PathBuf::from("source.png"),
             duration_ms: 100,
             transform_spec: TransformSpec {
-                resize: Some(ResizeTarget {
+                crop: Some(CropRect {
+                    x: 0,
+                    y: 0,
                     width: 300,
                     height: 600,
                 }),

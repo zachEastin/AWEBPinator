@@ -149,12 +149,6 @@ fn hash_frame_preview_inputs(
         .crop
         .map(|crop| (crop.x, crop.y, crop.width, crop.height))
         .hash(hasher);
-    frame
-        .transform_spec
-        .resize
-        .map(|resize| (resize.width, resize.height))
-        .hash(hasher);
-    frame.transform_spec.fit_mode.as_str().hash(hasher);
 }
 
 pub fn render_frame_to_path(
@@ -197,10 +191,6 @@ fn apply_transform(
     }
     if let Some(crop) = transform.crop {
         image = crop_image(image, crop);
-    }
-
-    if let Some(resize) = transform.resize {
-        image = fit_image(image, resize, transform.fit_mode);
     }
 
     if let Some((resize, fit_mode)) = export_size {

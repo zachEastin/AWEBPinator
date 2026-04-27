@@ -1,7 +1,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::mp4::default_mp4_encoder_name;
 
@@ -159,26 +159,68 @@ pub struct ResizeTarget {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OriginalSizeReference {
+    SmallestFrame,
+    #[default]
+    LargestFrame,
+}
+
+impl OriginalSizeReference {
+    pub const ALL: [Self; 2] = [Self::LargestFrame, Self::SmallestFrame];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LargestFrame => "Largest Frame",
+            Self::SmallestFrame => "Smallest Frame",
+        }
+    }
+}
+
+impl fmt::Display for OriginalSizeReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Default)]
 pub struct TransformSpec {
     pub rotate_quarter_turns: i32,
     pub flip_horizontal: bool,
     pub flip_vertical: bool,
     pub crop: Option<CropRect>,
-    pub resize: Option<ResizeTarget>,
-    pub fit_mode: FitMode,
 }
 
-impl Default for TransformSpec {
-    fn default() -> Self {
-        Self {
-            rotate_quarter_turns: 0,
-            flip_horizontal: false,
-            flip_vertical: false,
-            crop: None,
-            resize: None,
-            fit_mode: FitMode::Contain,
-        }
+#[derive(Deserialize)]
+struct TransformSpecSerde {
+    #[serde(default)]
+    rotate_quarter_turns: i32,
+    #[serde(default)]
+    flip_horizontal: bool,
+    #[serde(default)]
+    flip_vertical: bool,
+    #[serde(default)]
+    crop: Option<CropRect>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    resize: Option<ResizeTarget>,
+    #[allow(dead_code)]
+    #[serde(default)]
+    fit_mode: FitMode,
+}
+
+impl<'de> Deserialize<'de> for TransformSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = TransformSpecSerde::deserialize(deserializer)?;
+        Ok(Self {
+            rotate_quarter_turns: value.rotate_quarter_turns,
+            flip_horizontal: value.flip_horizontal,
+            flip_vertical: value.flip_vertical,
+            crop: value.crop,
+        })
     }
 }
 
@@ -210,6 +252,8 @@ pub struct ExportProfile {
     pub preset: ExportPreset,
     pub output_width: Option<u32>,
     pub output_height: Option<u32>,
+    #[serde(default)]
+    pub original_size_reference: OriginalSizeReference,
     pub fit_mode: FitMode,
     pub quality: f32,
     pub lossless: bool,
@@ -237,6 +281,7 @@ impl ExportProfile {
                 preset,
                 output_width: None,
                 output_height: None,
+                original_size_reference: OriginalSizeReference::LargestFrame,
                 fit_mode: FitMode::Contain,
                 quality: 45.0,
                 lossless: false,
@@ -253,6 +298,7 @@ impl ExportProfile {
                 preset,
                 output_width: None,
                 output_height: None,
+                original_size_reference: OriginalSizeReference::LargestFrame,
                 fit_mode: FitMode::Contain,
                 quality: 75.0,
                 lossless: false,
@@ -269,6 +315,7 @@ impl ExportProfile {
                 preset,
                 output_width: None,
                 output_height: None,
+                original_size_reference: OriginalSizeReference::LargestFrame,
                 fit_mode: FitMode::Contain,
                 quality: 92.0,
                 lossless: false,
@@ -285,6 +332,7 @@ impl ExportProfile {
                 preset,
                 output_width: None,
                 output_height: None,
+                original_size_reference: OriginalSizeReference::LargestFrame,
                 fit_mode: FitMode::Contain,
                 quality: 100.0,
                 lossless: true,
@@ -304,6 +352,7 @@ impl ExportProfile {
         let raw_args = self.raw_args.clone();
         let output_width = self.output_width;
         let output_height = self.output_height;
+        let original_size_reference = self.original_size_reference;
         let loop_count = self.loop_count;
         let overwrite = self.overwrite;
         let mp4_video_encoder = self.mp4_video_encoder.clone();
@@ -312,6 +361,7 @@ impl ExportProfile {
         self.raw_args = raw_args;
         self.output_width = output_width;
         self.output_height = output_height;
+        self.original_size_reference = original_size_reference;
         self.loop_count = loop_count;
         self.overwrite = overwrite;
         self.mp4_video_encoder = mp4_video_encoder;

@@ -11,7 +11,9 @@ use tempfile::TempDir;
 
 use crate::mp4::{detect_dri_render_node, is_known_mp4_encoder, software_fallback_mp4_encoder};
 use crate::thumbnail::render_frame_to_path;
-use crate::types::{ExportFormat, ExportJob, ExportProfile, FrameItem, ResizeTarget};
+use crate::types::{
+    ExportFormat, ExportJob, ExportProfile, FrameItem, OriginalSizeReference, ResizeTarget,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExportPhase {
@@ -110,6 +112,65 @@ pub fn build_command_preview(
     }
 }
 
+pub fn resolved_export_size(frames: &[FrameItem], profile: &ExportProfile) -> Option<ResizeTarget> {
+    match (profile.output_width, profile.output_height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => {
+            Some(ResizeTarget { width, height })
+        }
+        _ => resolved_original_export_size(frames, profile.original_size_reference),
+    }
+}
+
+pub fn resolved_original_export_size(
+    frames: &[FrameItem],
+    reference: OriginalSizeReference,
+) -> Option<ResizeTarget> {
+    let mut dimensions = frames
+        .iter()
+        .filter(|frame| frame.enabled)
+        .filter_map(frame_effective_dimensions_for_export);
+    let first = dimensions.next()?;
+    let chosen = dimensions.fold(first, |current, candidate| {
+        let current_area = u64::from(current.width) * u64::from(current.height);
+        let candidate_area = u64::from(candidate.width) * u64::from(candidate.height);
+        match reference {
+            OriginalSizeReference::LargestFrame => {
+                if candidate_area > current_area
+                    || (candidate_area == current_area
+                        && (candidate.width, candidate.height) > (current.width, current.height))
+                {
+                    candidate
+                } else {
+                    current
+                }
+            }
+            OriginalSizeReference::SmallestFrame => {
+                if candidate_area < current_area
+                    || (candidate_area == current_area
+                        && (candidate.width, candidate.height) < (current.width, current.height))
+                {
+                    candidate
+                } else {
+                    current
+                }
+            }
+        }
+    });
+    Some(chosen)
+}
+
+fn frame_effective_dimensions_for_export(frame: &FrameItem) -> Option<ResizeTarget> {
+    let (mut width, mut height) = frame.source_dimensions?;
+    if frame.transform_spec.rotate_quarter_turns.rem_euclid(2) == 1 {
+        (width, height) = (height, width);
+    }
+    if let Some(crop) = frame.transform_spec.crop {
+        width = crop.width.max(1);
+        height = crop.height.max(1);
+    }
+    Some(ResizeTarget { width, height })
+}
+
 pub fn export_animation(
     frames: &[FrameItem],
     profile: &ExportProfile,
@@ -141,12 +202,7 @@ where
     let rendered_dir = temp_dir.path().join("frames");
     fs::create_dir_all(&rendered_dir).context("create rendered frame dir")?;
 
-    let resize_target = match (profile.output_width, profile.output_height) {
-        (Some(width), Some(height)) if width > 0 && height > 0 => {
-            Some(ResizeTarget { width, height })
-        }
-        _ => None,
-    };
+    let resize_target = resolved_export_size(&enabled_frames, profile);
     let export_fit_mode = profile.fit_mode;
 
     on_progress(ExportProgress {
@@ -453,11 +509,12 @@ mod tests {
     use image::{Rgba, RgbaImage};
     use tempfile::tempdir;
 
-    use crate::types::{EncoderPreset, ExportFormat, ExportPreset, FitMode};
+    use crate::types::{EncoderPreset, ExportFormat, ExportPreset, FitMode, OriginalSizeReference};
 
     use super::{
         ExportPhase, build_effective_command, export_animation, export_animation_with_progress,
-        normalized_output_path, write_concat_manifest,
+        normalized_output_path, resolved_export_size, resolved_original_export_size,
+        write_concat_manifest,
     };
 
     fn tiny_png(path: &Path, color: [u8; 4]) {
@@ -492,6 +549,7 @@ mod tests {
             preset: ExportPreset::Balanced,
             output_width: Some(320),
             output_height: Some(240),
+            original_size_reference: OriginalSizeReference::LargestFrame,
             fit_mode: FitMode::Contain,
             quality: 80.0,
             lossless: false,
@@ -558,7 +616,7 @@ mod tests {
             transform_spec: TransformSpec::default(),
             thumbnail_path: None,
             enabled: true,
-            source_dimensions: Some((4, 4)),
+            source_dimensions: Some((64, 64)),
         }];
         let profile = ExportProfile {
             format: ExportFormat::Mp4,
@@ -587,7 +645,7 @@ mod tests {
                 transform_spec: TransformSpec::default(),
                 thumbnail_path: None,
                 enabled: true,
-                source_dimensions: Some((4, 4)),
+                source_dimensions: Some((64, 64)),
             },
             FrameItem {
                 id: 2,
@@ -596,7 +654,7 @@ mod tests {
                 transform_spec: TransformSpec::default(),
                 thumbnail_path: None,
                 enabled: true,
-                source_dimensions: Some((4, 4)),
+                source_dimensions: Some((64, 64)),
             },
         ];
         let output = dir.path().join("animation.webp");
@@ -617,7 +675,7 @@ mod tests {
             transform_spec: TransformSpec::default(),
             thumbnail_path: None,
             enabled: true,
-            source_dimensions: Some((4, 4)),
+            source_dimensions: Some((64, 64)),
         }];
         let output = dir.path().join("animation");
         let job = export_animation(&frames, &ExportProfile::default(), &output).unwrap();
@@ -641,7 +699,7 @@ mod tests {
                 transform_spec: TransformSpec::default(),
                 thumbnail_path: None,
                 enabled: true,
-                source_dimensions: Some((4, 4)),
+                source_dimensions: Some((64, 64)),
             },
             FrameItem {
                 id: 2,
@@ -650,7 +708,7 @@ mod tests {
                 transform_spec: TransformSpec::default(),
                 thumbnail_path: None,
                 enabled: true,
-                source_dimensions: Some((4, 4)),
+                source_dimensions: Some((64, 64)),
             },
         ];
         let output = dir.path().join("progress.webp");
@@ -676,5 +734,79 @@ mod tests {
                 .any(|update| update.phase == ExportPhase::Encoding)
         );
         assert_eq!(progress_updates.last().unwrap().fraction, 1.0);
+    }
+
+    #[test]
+    fn resolved_original_export_size_uses_largest_or_smallest_frame() {
+        let frames = vec![
+            FrameItem {
+                id: 1,
+                source_path: Path::new("one.png").into(),
+                duration_ms: 120,
+                transform_spec: TransformSpec::default(),
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: Some((400, 300)),
+            },
+            FrameItem {
+                id: 2,
+                source_path: Path::new("two.png").into(),
+                duration_ms: 120,
+                transform_spec: TransformSpec {
+                    rotate_quarter_turns: 1,
+                    crop: Some(crate::types::CropRect {
+                        x: 0,
+                        y: 0,
+                        width: 200,
+                        height: 500,
+                    }),
+                    ..TransformSpec::default()
+                },
+                thumbnail_path: None,
+                enabled: true,
+                source_dimensions: Some((900, 600)),
+            },
+        ];
+
+        assert_eq!(
+            resolved_original_export_size(&frames, OriginalSizeReference::LargestFrame),
+            Some(crate::types::ResizeTarget {
+                width: 400,
+                height: 300,
+            })
+        );
+        assert_eq!(
+            resolved_original_export_size(&frames, OriginalSizeReference::SmallestFrame),
+            Some(crate::types::ResizeTarget {
+                width: 200,
+                height: 500,
+            })
+        );
+    }
+
+    #[test]
+    fn resolved_export_size_prefers_explicit_custom_dimensions() {
+        let frames = vec![FrameItem {
+            id: 1,
+            source_path: Path::new("one.png").into(),
+            duration_ms: 120,
+            transform_spec: TransformSpec::default(),
+            thumbnail_path: None,
+            enabled: true,
+            source_dimensions: Some((400, 300)),
+        }];
+        let profile = ExportProfile {
+            output_width: Some(1280),
+            output_height: Some(720),
+            ..ExportProfile::default()
+        };
+
+        assert_eq!(
+            resolved_export_size(&frames, &profile),
+            Some(crate::types::ResizeTarget {
+                width: 1280,
+                height: 720,
+            })
+        );
     }
 }

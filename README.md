@@ -146,7 +146,7 @@ Use this when validating the app locally after a change.
 3. **Drag/drop**: Drag image files from the file manager into the timeline; expect the app to offer append, prepend, or replace when frames already exist.
 4. **Selection**: Select one frame, Ctrl-select multiple frames, and Shift-select a range; expect the selected timeline tiles to show the full blue selected background.
 5. **Timeline edits**: Verify duration changes, duplicate, copy/paste, remove, move up/down, and drag reorder; expect the timeline order and selection state to remain coherent.
-6. **Preview and transforms**: Rotate, flip, crop, resize, and change fit mode; expect the selected-frame preview to update after each edit.
+6. **Preview and transforms**: Rotate, flip, and crop in Edit, then adjust Export Size and fit mode in Export; expect the selected-frame preview and export preview to update after each change.
 7. **Workflow tabs**: Visit Edit, Timeline, Export, and Diagnostics; expect each tab to show its controls without overlapping or clipped text.
 8. **Timeline loop action**: Run `Create Loop` from the Timeline tab; expect the app to append only the mirrored interior frames and double the original source start/end frame durations for a smoother turnaround.
 9. **Export**: Set an output path and export an animated WebP or MP4; expect the output file to exist and open in a compatible viewer/player.

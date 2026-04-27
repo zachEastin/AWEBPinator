@@ -78,6 +78,7 @@ If the change is specifically visual or interaction-heavy, prefer a real interac
 
 - Main preview/editor occupies the main body
 - Timeline is a horizontal thumbnail strip along the bottom
+- Resize is export-only; Edit should not expose per-frame resize controls
 - Timeline loop creation is a single mirrored-loop action that holds the original source endpoints slightly longer
 - Timeline tiles should currently show only:
   - preview
