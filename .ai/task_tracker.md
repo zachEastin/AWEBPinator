@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-24 - Add batch duration presets in Timeline Actions
+
+- Status: Done
+- Request: Add Timeline Actions presets for batch frame duration labeled as frames per second with matching milliseconds in parentheses, while keeping a Custom option for exact per-frame millisecond input.
+- Files inspected: `.ai/task_tracker.md`, `src/app.rs`, `README.md`, `AGENTS.md`, `.ai/workflows.md`
+- Files changed: `.ai/task_tracker.md`, `src/app.rs`
+- Verification: `cargo fmt --all`, `git diff --check`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `timeout 5s cargo run >/tmp/awebpinator-batch-duration-smoke.log 2>&1`
+- Notes: Added a Timeline Actions fps preset combo with `10/12/15/24/30/60 fps` labels showing the corresponding milliseconds in parentheses, plus a `Custom` option that re-enables the exact-ms spin button for manual entry. Preset selections now drive the shared batch duration value, while typed exact values fall back to `Custom` unless they match one of the preset millisecond values. Added small unit coverage for preset-to-duration mapping. In this environment, the bounded GTK smoke launched `target/debug/awebpinator` but exited early with code `0` instead of timing out with `124`, so it was treated as inconclusive rather than a full startup-smoke pass.
+
 ### 2026-04-24 - Simplify loop builder to one mirrored action
 
 - Status: Done

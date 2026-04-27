@@ -83,6 +83,8 @@ pub enum AppMsg {
     ToggleEnabled(u64, bool),
     SetFrameDuration(u64, u32),
     ApplyBatchDuration(u32),
+    SetBatchDurationPreset(BatchDurationPreset),
+    SetBatchDurationValue(u32),
     MoveSelectionUp,
     MoveSelectionDown,
     DropFrameAt {
@@ -254,6 +256,60 @@ pub enum LoopScope {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchDurationPreset {
+    Fps10,
+    Fps12,
+    Fps15,
+    Fps24,
+    Fps30,
+    Fps60,
+    Custom,
+}
+
+impl BatchDurationPreset {
+    const ALL: [Self; 7] = [
+        Self::Fps10,
+        Self::Fps12,
+        Self::Fps15,
+        Self::Fps24,
+        Self::Fps30,
+        Self::Fps60,
+        Self::Custom,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Fps10 => "10 fps (100 ms)",
+            Self::Fps12 => "12 fps (83 ms)",
+            Self::Fps15 => "15 fps (67 ms)",
+            Self::Fps24 => "24 fps (42 ms)",
+            Self::Fps30 => "30 fps (33 ms)",
+            Self::Fps60 => "60 fps (17 ms)",
+            Self::Custom => "Custom",
+        }
+    }
+
+    fn duration_ms(self) -> Option<u32> {
+        match self {
+            Self::Fps10 => Some(100),
+            Self::Fps12 => Some(83),
+            Self::Fps15 => Some(67),
+            Self::Fps24 => Some(42),
+            Self::Fps30 => Some(33),
+            Self::Fps60 => Some(17),
+            Self::Custom => None,
+        }
+    }
+
+    fn from_duration_ms(duration_ms: u32) -> Self {
+        Self::ALL
+            .into_iter()
+            .find(|preset| preset.duration_ms() == Some(duration_ms))
+            .unwrap_or(Self::Custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DimensionPreset {
     Original,
     Hd1080,
@@ -383,6 +439,8 @@ pub struct AppModel {
     layout_mode: LayoutMode,
     active_tab: WorkflowTab,
     advanced_mode: bool,
+    batch_duration_preset: BatchDurationPreset,
+    batch_duration_ms: u32,
     loop_repeats: u32,
     loop_scope: LoopScope,
     crop_preset: CropPreset,
@@ -463,6 +521,8 @@ pub struct AppWidgets {
     quick_resize_custom_width_spin: gtk::SpinButton,
     quick_resize_custom_height_spin: gtk::SpinButton,
     export_size_combo: gtk::ComboBoxText,
+    batch_duration_combo: gtk::ComboBoxText,
+    batch_duration_spin: gtk::SpinButton,
     loop_source_label: gtk::Label,
     loop_summary_label: gtk::Label,
     loop_repeats_spin: gtk::SpinButton,
@@ -566,6 +626,8 @@ impl Component for AppModel {
             layout_mode: layout_mode_for_width(1280),
             active_tab: WorkflowTab::Organize,
             advanced_mode: ui_preferences.advanced_mode,
+            batch_duration_preset: BatchDurationPreset::Fps10,
+            batch_duration_ms: 100,
             loop_repeats: 1,
             loop_scope: LoopScope::Selected,
             crop_preset: CropPreset::Square,
@@ -1202,9 +1264,12 @@ impl Component for AppModel {
             .orientation(gtk::Orientation::Horizontal)
             .spacing(8)
             .build();
+        let batch_duration_combo = combo_for_batch_duration_preset();
+        set_accessible_label(&batch_duration_combo, "Timeline batch duration preset");
         let batch_duration_spin = gtk::SpinButton::with_range(10.0, 30_000.0, 5.0);
         set_accessible_label(&batch_duration_spin, "Timeline batch duration");
         batch_duration_spin.set_value(100.0);
+        batch_duration_spin.set_sensitive(false);
         let batch_duration_button = build_labeled_button(
             "Set Duration",
             "preferences-system-time-symbolic",
@@ -1212,6 +1277,7 @@ impl Component for AppModel {
         );
         batch_duration_button.add_css_class("pill-button");
         batch_duration_row.append(&gtk::Label::new(Some("Selected Frames")));
+        batch_duration_row.append(&batch_duration_combo);
         batch_duration_row.append(&batch_duration_spin);
         batch_duration_row.append(&batch_duration_button);
         timeline_selection_actions.append(&helper_label(
@@ -2215,6 +2281,22 @@ impl Component for AppModel {
             sender,
             move |_| sender.input(AppMsg::CreateLoop)
         ));
+        batch_duration_combo.connect_changed(clone!(
+            #[strong]
+            sender,
+            #[strong]
+            batch_duration_combo,
+            move |_| {
+                sender.input(AppMsg::SetBatchDurationPreset(
+                    batch_duration_preset_from_combo(&batch_duration_combo),
+                ))
+            }
+        ));
+        batch_duration_spin.connect_value_changed(clone!(
+            #[strong]
+            sender,
+            move |spin| sender.input(AppMsg::SetBatchDurationValue(spin.value() as u32))
+        ));
         nav_first_button.connect_clicked(clone!(
             #[strong]
             sender,
@@ -2509,6 +2591,8 @@ impl Component for AppModel {
             quick_resize_custom_width_spin,
             quick_resize_custom_height_spin,
             export_size_combo,
+            batch_duration_combo,
+            batch_duration_spin,
             loop_source_label,
             loop_summary_label,
             loop_repeats_spin,
@@ -2679,6 +2763,17 @@ impl Component for AppModel {
                 if let Some(frame) = self.frame_mut(id) {
                     frame.duration_ms = duration.max(10);
                 }
+            }
+            AppMsg::SetBatchDurationPreset(preset) => {
+                self.batch_duration_preset = preset;
+                if let Some(duration_ms) = preset.duration_ms() {
+                    self.batch_duration_ms = duration_ms;
+                }
+            }
+            AppMsg::SetBatchDurationValue(duration) => {
+                self.batch_duration_ms = duration.max(10);
+                self.batch_duration_preset =
+                    BatchDurationPreset::from_duration_ms(self.batch_duration_ms);
             }
             AppMsg::ApplyBatchDuration(duration) => {
                 self.timeline
@@ -3551,6 +3646,14 @@ impl Component for AppModel {
             &widgets.export_size_combo,
             export_dimension_preset(&self.export_profile),
         );
+        sync_combo_active_batch_duration_preset(
+            &widgets.batch_duration_combo,
+            self.batch_duration_preset,
+        );
+        set_spin_if_needed(&widgets.batch_duration_spin, self.batch_duration_ms as f64);
+        widgets
+            .batch_duration_spin
+            .set_sensitive(self.batch_duration_preset == BatchDurationPreset::Custom);
         set_widget_css_class(
             &widgets.export_preset_fast_button,
             "choice-card-active",
@@ -5197,6 +5300,15 @@ fn combo_for_fit_mode() -> gtk::ComboBoxText {
     combo
 }
 
+fn combo_for_batch_duration_preset() -> gtk::ComboBoxText {
+    let combo = gtk::ComboBoxText::new();
+    for preset in BatchDurationPreset::ALL {
+        combo.append_text(preset.label());
+    }
+    combo.set_active(Some(0));
+    combo
+}
+
 fn combo_for_dimension_preset() -> gtk::ComboBoxText {
     let combo = gtk::ComboBoxText::new();
     combo.set_hexpand(true);
@@ -5239,6 +5351,18 @@ fn fit_mode_from_combo(combo: &gtk::ComboBoxText) -> FitMode {
     }
 }
 
+fn batch_duration_preset_from_combo(combo: &gtk::ComboBoxText) -> BatchDurationPreset {
+    match combo.active_text().as_deref() {
+        Some("12 fps (83 ms)") => BatchDurationPreset::Fps12,
+        Some("15 fps (67 ms)") => BatchDurationPreset::Fps15,
+        Some("24 fps (42 ms)") => BatchDurationPreset::Fps24,
+        Some("30 fps (33 ms)") => BatchDurationPreset::Fps30,
+        Some("60 fps (17 ms)") => BatchDurationPreset::Fps60,
+        Some("Custom") => BatchDurationPreset::Custom,
+        _ => BatchDurationPreset::Fps10,
+    }
+}
+
 fn dimension_preset_from_combo(combo: &gtk::ComboBoxText) -> DimensionPreset {
     match combo.active_text().as_deref() {
         Some("1080p") => DimensionPreset::Hd1080,
@@ -5274,6 +5398,21 @@ fn sync_combo_active_fit_mode(combo: &gtk::ComboBoxText, mode: FitMode) {
         FitMode::Contain => 0,
         FitMode::Cover => 1,
         FitMode::Stretch => 2,
+    };
+    if combo.active() != Some(target) {
+        combo.set_active(Some(target));
+    }
+}
+
+fn sync_combo_active_batch_duration_preset(combo: &gtk::ComboBoxText, preset: BatchDurationPreset) {
+    let target = match preset {
+        BatchDurationPreset::Fps10 => 0,
+        BatchDurationPreset::Fps12 => 1,
+        BatchDurationPreset::Fps15 => 2,
+        BatchDurationPreset::Fps24 => 3,
+        BatchDurationPreset::Fps30 => 4,
+        BatchDurationPreset::Fps60 => 5,
+        BatchDurationPreset::Custom => 6,
     };
     if combo.active() != Some(target) {
         combo.set_active(Some(target));
@@ -7279,12 +7418,12 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        CropAnchor, CropPreset, PreviewRenderSize, crop_rect_for_frame, following_frame_id,
-        frame_effective_dimensions, immediate_preview_path, playback_start_frame_id,
-        preview_render_size_for_dimensions, preview_render_size_from_values,
-        preview_result_is_usable, resolved_primary_selected_id, scale_dimension_by_ratio,
-        scaled_resize_dimension, should_refresh_preview, step_frame_id, timeline_tile_picture_size,
-        timeline_visible_scroll_value, usable_preview_path,
+        BatchDurationPreset, CropAnchor, CropPreset, PreviewRenderSize, crop_rect_for_frame,
+        following_frame_id, frame_effective_dimensions, immediate_preview_path,
+        playback_start_frame_id, preview_render_size_for_dimensions,
+        preview_render_size_from_values, preview_result_is_usable, resolved_primary_selected_id,
+        scale_dimension_by_ratio, scaled_resize_dimension, should_refresh_preview, step_frame_id,
+        timeline_tile_picture_size, timeline_visible_scroll_value, usable_preview_path,
     };
     use crate::types::{CropRect, FitMode, FrameItem, ResizeTarget, TransformSpec};
     use std::collections::BTreeSet;
@@ -7364,6 +7503,42 @@ mod tests {
         assert_eq!(playback_start_frame_id(&frame_ids, None), Some(10));
         assert_eq!(playback_start_frame_id(&frame_ids, Some(20)), Some(20));
         assert_eq!(playback_start_frame_id(&frame_ids, Some(30)), Some(10));
+    }
+
+    #[test]
+    fn batch_duration_presets_map_known_ms_values() {
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(100),
+            BatchDurationPreset::Fps10
+        );
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(83),
+            BatchDurationPreset::Fps12
+        );
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(67),
+            BatchDurationPreset::Fps15
+        );
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(42),
+            BatchDurationPreset::Fps24
+        );
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(33),
+            BatchDurationPreset::Fps30
+        );
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(17),
+            BatchDurationPreset::Fps60
+        );
+    }
+
+    #[test]
+    fn batch_duration_preset_uses_custom_for_non_preset_ms_values() {
+        assert_eq!(
+            BatchDurationPreset::from_duration_ms(41),
+            BatchDurationPreset::Custom
+        );
     }
 
     #[test]
