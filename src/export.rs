@@ -2,8 +2,11 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::{Context, anyhow, bail};
+use rayon::prelude::*;
 use tempfile::TempDir;
 
 use crate::mp4::{detect_dri_render_node, is_known_mp4_encoder, software_fallback_mp4_encoder};
@@ -144,6 +147,7 @@ where
         }
         _ => None,
     };
+    let export_fit_mode = profile.fit_mode;
 
     on_progress(ExportProgress {
         phase: ExportPhase::PreparingFrames,
@@ -152,28 +156,61 @@ where
     });
 
     let total_frames = enabled_frames.len();
+    let rendered_dir_for_thread = rendered_dir.clone();
+    let enabled_frames_for_thread = enabled_frames.clone();
+    let (progress_tx, progress_rx) = mpsc::channel();
+    let render_thread = thread::Builder::new()
+        .name("export-frame-render".to_string())
+        .spawn(move || {
+            enabled_frames_for_thread
+                .par_iter()
+                .enumerate()
+                .map(|(index, frame)| -> anyhow::Result<(usize, PathBuf, u32)> {
+                    let frame_path = rendered_dir_for_thread.join(format!("{index:05}.png"));
+                    render_frame_to_path(frame, resize_target, export_fit_mode, &frame_path)?;
+                    let _ = progress_tx.send((index, frame.file_name()));
+                    Ok((index, frame_path, frame.duration_ms))
+                })
+                .collect::<Vec<_>>()
+        })
+        .context("spawn export frame render worker")?;
+
+    let mut completed_frames = 0_usize;
     let mut last_prepare_bucket = None;
-    let mut manifest_entries = Vec::new();
-    for (index, frame) in enabled_frames.iter().enumerate() {
-        let frame_path = rendered_dir.join(format!("{index:05}.png"));
-        render_frame_to_path(frame, resize_target, profile.fit_mode, &frame_path)?;
-        manifest_entries.push((frame_path, frame.duration_ms));
-        let prepare_bucket = ((index + 1) * PREPARE_PROGRESS_BUCKETS) / total_frames.max(1);
-        let should_emit = last_prepare_bucket != Some(prepare_bucket) || index + 1 == total_frames;
+    while completed_frames < total_frames {
+        let Ok((index, file_name)) = progress_rx.recv() else {
+            break;
+        };
+        completed_frames += 1;
+        let prepare_bucket = (completed_frames * PREPARE_PROGRESS_BUCKETS) / total_frames.max(1);
+        let should_emit =
+            last_prepare_bucket != Some(prepare_bucket) || completed_frames == total_frames;
         if should_emit {
             last_prepare_bucket = Some(prepare_bucket);
             on_progress(ExportProgress {
                 phase: ExportPhase::PreparingFrames,
-                fraction: 0.8 * ((index + 1) as f64 / total_frames as f64),
+                fraction: 0.8 * (completed_frames as f64 / total_frames as f64),
                 detail: format!(
-                    "Rendering frame {} of {}: {}",
+                    "Rendered frame {} of {}: {}",
                     index + 1,
                     total_frames,
-                    frame.file_name()
+                    file_name
                 ),
             });
         }
     }
+
+    let rendered_results = render_thread
+        .join()
+        .map_err(|_| anyhow!("export frame render worker panicked"))?;
+    let mut rendered_results = rendered_results
+        .into_iter()
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    rendered_results.sort_unstable_by_key(|(index, _, _)| *index);
+    let manifest_entries = rendered_results
+        .into_iter()
+        .map(|(_, frame_path, duration_ms)| (frame_path, duration_ms))
+        .collect::<Vec<_>>();
 
     let manifest_path = temp_dir.path().join("frames.ffconcat");
     write_concat_manifest(&manifest_path, &manifest_entries)?;

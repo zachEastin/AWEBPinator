@@ -122,6 +122,7 @@ dependencies = [
  "gtk4",
  "image",
  "pango",
+ "rayon",
  "relm4",
  "serde",
  "serde_json",

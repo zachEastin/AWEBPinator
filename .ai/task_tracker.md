@@ -11,6 +11,15 @@ Future agents must update this file during work.
 
 ## Active Tasks
 
+### 2026-04-27 - Parallelize export frame preparation
+
+- Status: Done
+- Request: Parallelize `render_frame_to_path` during export.
+- Files inspected: `.ai/task_tracker.md`, `src/export.rs`, `Cargo.toml`
+- Files changed: `.ai/task_tracker.md`, `Cargo.toml`, `Cargo.lock`, `src/export.rs`
+- Verification: `cargo fmt --all`, `cargo build`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, `git diff --check`
+- Notes: Export frame preparation now uses Rayon to render transformed frame files in parallel on a worker thread while the outer export worker continues to receive incremental progress updates. Manifest ordering remains deterministic by collecting `(index, path, duration)` results and sorting them back into timeline order before writing the concat manifest. The ffmpeg encode step itself was left unchanged.
+
 ### 2026-04-27 - Annotate export size estimate with active format and codec
 
 - Status: Done
